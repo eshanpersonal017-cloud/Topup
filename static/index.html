@@ -47,21 +47,31 @@ const st={pending:"#f59e0b",approved:"#22c55e",done:"#22c55e",paid:"#22c55e",rej
 const tg=s=>`<span class="tag" style="color:${st[s]||"#fff"}">${esc(s)}</span>`;
 const R=(t,s,x,b="")=>`<div class="card"><div class="row"><div>${t}<div class="m">${x}</div></div>${tg(s)}</div>${b?`<div class="row" style="margin-top:10px">${b}</div>`:""}</div>`;
 async function load(){try{U=await api("me")}catch{U=null}draw()}
-let AM="login";
+let AM="login",SE="",SD={};
 function gbtn(){const g=$("#gb");if(!g)return;
 if(!C.google){g.innerHTML='<span class="m">Google login ekhono chalu nai (Admin > Settings > google_client_id)</span>';return}
 if(!(window.google&&google.accounts)){if(!window._gl){window._gl=1;const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.onload=gbtn;
 s.onerror=()=>{window._gl=0;g.innerHTML='<span class="m">Google script load hoy nai. Internet/adblock check korun</span>'};document.head.appendChild(s)}else setTimeout(gbtn,300);return}
 google.accounts.id.initialize({client_id:C.google,callback:async r=>{try{U=await api("google",{credential:r.credential});draw()}catch(e){alert(e.message)}}});
 g.innerHTML="";google.accounts.id.renderButton(g,{theme:"filled_black",size:"large",text:"continue_with",shape:"pill",width:Math.min(300,innerWidth-80)})}
-function auth(){setTimeout(gbtn,50);const s=AM=="signup";
-return `<main style="padding-top:60px;text-align:center"><div class="logo" style="font-size:34px">${esc(C.site)}</div><p class="m">Game top-up · Tournament · Daily rewards</p>
+function auth(){setTimeout(gbtn,50);const s=AM=="signup",v=AM=="verify";
+const head=`<div class="logo" style="font-size:34px">${esc(C.site)}</div><p class="m">Game top-up · Tournament · Daily rewards</p>`;
+if(v)return `<main style="padding-top:60px;text-align:center">${head}<div class="card" style="text-align:left"><div style="text-align:center;font-weight:800;font-size:16px;margin:2px 0 6px">Email verify korun</div>
+<p class="m" style="text-align:center">6 digit code pathano hoyeche:<br><b class="gold">${esc(SE)}</b></p>
+<input id="cd" inputmode="numeric" maxlength="6" placeholder="6 digit code" autocomplete="one-time-code" style="text-align:center;font-size:22px;letter-spacing:8px">
+<button class="w" style="margin-top:8px" onclick="sVerify()">Verify & Create account</button>
+<div class="m" style="text-align:center;margin-top:14px"><a style="color:#a855f7;font-weight:700" onclick="sResend()">Code abar pathan</a> · <a style="color:#a855f7;font-weight:700" onclick="AM='signup';draw()">Email change</a></div></div></main>`;
+return `<main style="padding-top:60px;text-align:center">${head}
 <div class="card" style="text-align:left"><div style="text-align:center;font-weight:800;font-size:16px;margin:2px 0 8px">${s?"Create account":"Welcome back"}</div>
-<input id="u" placeholder="Username" autocomplete="username"><input id="p" type="password" placeholder="Password" autocomplete="${s?"new-password":"current-password"}">${s?'<input id="p2" type="password" placeholder="Confirm password" autocomplete="new-password">':""}
-${s?`<button class="w" style="margin-top:8px" onclick="go('signup')">Create account</button>`:`<div class="row" style="margin-top:8px"><button class="w" onclick="go('login')">Login</button><button class="w g" onclick="AM='signup';draw()">Sign up</button></div>`}
+<input id="u" placeholder="Username" autocomplete="username" value="${s?esc(SD.username||""):""}">${s?`<input id="e" type="email" placeholder="Email address" autocomplete="email" value="${esc(SD.email||"")}">`:""}<input id="p" type="password" placeholder="Password" autocomplete="${s?"new-password":"current-password"}">${s?'<input id="p2" type="password" placeholder="Confirm password" autocomplete="new-password">':""}
+${s?`<button class="w" style="margin-top:8px" onclick="sStart()">Send verification code</button>`:`<div class="row" style="margin-top:8px"><button class="w" onclick="go('login')">Login</button><button class="w g" onclick="AM='signup';draw()">Sign up</button></div>`}
 <div class="m" style="text-align:center;margin:14px 0 4px">— or —</div><div id="gb" style="margin-top:8px;display:flex;justify-content:center;text-align:center"></div>
 ${s?`<div class="m" style="text-align:center;margin-top:14px">Already account ache? <a style="color:#a855f7;font-weight:700" onclick="AM='login';draw()">Login</a></div>`:""}</div></main>`}
-async function go(k){try{if(k=="signup"&&$("#p2")&&$("#p2").value!==$("#p").value)return alert("Password duita mile nai");U=await api(k,{username:$("#u").value,password:$("#p").value});draw()}catch(e){alert(e.message)}}
+async function go(k){try{U=await api(k,{username:$("#u").value,password:$("#p").value});draw()}catch(e){alert(e.message)}}
+async function sStart(){try{const d={username:$("#u").value,email:$("#e").value.trim(),password:$("#p").value};if($("#p2").value!==d.password)return alert("Password duita mile nai");
+await api("signup/start",d);SD=d;SE=d.email.toLowerCase();AM="verify";draw()}catch(e){alert(e.message)}}
+async function sVerify(){try{U=await api("signup/verify",{email:SE,code:$("#cd").value});AM="login";SD={};draw()}catch(e){alert(e.message)}}
+async function sResend(){try{await api("signup/start",SD);alert("Notun code pathano hoyeche")}catch(e){alert(e.message)}}
 const ic=n=>/diamond/i.test(n)?"💎":/member/i.test(n)?"🎫":/uc/i.test(n)?"🎯":/level/i.test(n)?"⭐":"🎁";
 async function home(){const ps=await api("packages");let g="",h="";
 ps.forEach(p=>{if(p.game!=g){h+=(g?"</div>":"")+`<h3>${esc(g=p.game)}</h3><div class="grid">`}h+=`<div class="pk" onclick="buy(${p.id},'${esc(p.name)}',${p.price})"><i>${ic(p.name)}</i><b>${esc(p.name)}</b><span>${M(p.price)}</span></div>`});
