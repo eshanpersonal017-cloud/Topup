@@ -10,7 +10,8 @@ METHODS = ["bKash", "Nagad", "Rocket", "Binance", "Bybit"]
 WHEEL = [5, 7, 10, 12, 15, 25, 8, 20]
 DEF = {"site": os.environ.get("SITE_NAME", "MY TOPUP"), "telegram": "https://t.me/yourchannel",
        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-       "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
+       "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""),
+       "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
@@ -37,7 +38,7 @@ def run(sql, a=()):
     d = db(); n = d.execute(sql, a).rowcount; d.commit(); return n
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -127,9 +128,17 @@ def limit(key, n, sec):
     if len(L) >= n: raise E("Onek bar chesta korechen, pore abar korun", 429)
     L.append(t); HITS[key] = L
 def hc(code): return hashlib.sha256((code + app.secret_key).encode()).hexdigest()
-def send_mail(to, subject, html):  # Brevo HTTP API (Railway te SMTP block thake)
+def send_mail(to, subject, html):  # 1) Google Apps Script relay (MAIL_URL)  2) Brevo API (BREVO_API_KEY). Railway te SMTP block thake
     s = S()
-    if not s["mail_key"] or not s["mail_from"]: raise E("Email service set kora nai (BREVO_API_KEY, MAIL_FROM)", 500)
+    if s["mail_url"]:
+        body = json.dumps({"secret": s["mail_secret"], "to": to, "subject": subject, "html": html, "name": s["site"]}).encode()
+        req = urllib.request.Request(s["mail_url"], body, {"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r: ok = json.loads(r.read().decode() or "{}").get("ok")
+        except Exception: ok = False
+        if not ok: raise E("Email pathano jayni. Pore abar chesta korun", 502)
+        return
+    if not s["mail_key"] or not s["mail_from"]: raise E("Email service set kora nai (MAIL_URL + MAIL_SECRET)", 500)
     body = json.dumps({"sender": {"name": s["site"], "email": s["mail_from"]}, "to": [{"email": to}], "subject": subject, "htmlContent": html}).encode()
     req = urllib.request.Request("https://api.brevo.com/v3/smtp/email", body,
                                  {"api-key": s["mail_key"], "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
