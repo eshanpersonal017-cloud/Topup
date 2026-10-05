@@ -1,4 +1,4 @@
-import os, re, time, random, sqlite3, json, urllib.request, urllib.parse, urllib.error
+import os, re, time, random, sqlite3, json, hashlib, hmac, secrets, urllib.request, urllib.parse, urllib.error
 from flask import Flask, request, jsonify, session, g, send_from_directory, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -9,7 +9,8 @@ DB = os.environ.get("DB_PATH", "data.db")  # Railway: Volume mount /data + DB_PA
 METHODS = ["bKash", "Nagad", "Rocket", "Binance", "Bybit"]
 WHEEL = [5, 7, 10, 12, 15, 25, 8, 20]
 DEF = {"site": os.environ.get("SITE_NAME", "MY TOPUP"), "telegram": "https://t.me/yourchannel",
-       "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
+       "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+       "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
@@ -36,7 +37,7 @@ def run(sql, a=()):
     d = db(); n = d.execute(sql, a).rowcount; d.commit(); return n
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -53,7 +54,8 @@ def init():
           min_level INT, slots INT, start TEXT, room_id TEXT DEFAULT '', room_pass TEXT DEFAULT '', status TEXT DEFAULT 'open');
         CREATE TABLE IF NOT EXISTS joins(id INTEGER PRIMARY KEY, tid INT, user_id INT, ign TEXT, UNIQUE(tid,user_id));
         CREATE TABLE IF NOT EXISTS spins(id INTEGER PRIMARY KEY, user_id INT, coins INT, created TEXT);
-        CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);""")
+        CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
         for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
@@ -118,15 +120,54 @@ def google():
         u = q("SELECT * FROM users WHERE email=?", (email,), one=True)
     if u["banned"]: raise E("Account banned", 403)
     session.permanent = True; session["uid"] = u["id"]; return jsonify(pub(u))
-@app.post("/api/signup")
-def signup():
-    j = request.get_json(force=True); u, p = (j.get("username") or "").strip().lower(), j.get("password") or ""
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
+HITS = {}
+def limit(key, n, sec):
+    t = time.time(); L = [x for x in HITS.get(key, []) if t - x < sec]
+    if len(L) >= n: raise E("Onek bar chesta korechen, pore abar korun", 429)
+    L.append(t); HITS[key] = L
+def hc(code): return hashlib.sha256((code + app.secret_key).encode()).hexdigest()
+def send_mail(to, subject, html):  # Brevo HTTP API (Railway te SMTP block thake)
+    s = S()
+    if not s["mail_key"] or not s["mail_from"]: raise E("Email service set kora nai (BREVO_API_KEY, MAIL_FROM)", 500)
+    body = json.dumps({"sender": {"name": s["site"], "email": s["mail_from"]}, "to": [{"email": to}], "subject": subject, "htmlContent": html}).encode()
+    req = urllib.request.Request("https://api.brevo.com/v3/smtp/email", body,
+                                 {"api-key": s["mail_key"], "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r: r.read()
+    except Exception: raise E("Email pathano jayni. Pore abar chesta korun", 502)
+@app.post("/api/signup/start")
+def signup_start():
+    j = request.get_json(force=True); u = (j.get("username") or "").strip().lower()
+    e = (j.get("email") or "").strip().lower(); p = j.get("password") or ""
+    limit("ip:" + (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[-1].strip(), 6, 600)
     if not re.fullmatch(r"[a-z0-9_]{3,20}", u): raise E("Username 3-20 ta letter/number hote hobe")
+    if not EMAIL_RE.match(e) or len(e) > 120: raise E("Valid email address din")
     if len(p) < 6: raise E("Password minimum 6 character")
-    try: run("INSERT INTO users(username,pw) VALUES(?,?)", (u, generate_password_hash(p)))
-    except sqlite3.IntegrityError: raise E("Username already ache")
-    session.permanent = True; session["uid"] = q("SELECT id FROM users WHERE username=?", (u,), one=True)["id"]
-    return jsonify(pub(me()))
+    if q("SELECT 1 FROM users WHERE username=?", (u,), one=True): raise E("Username already ache")
+    if q("SELECT 1 FROM users WHERE email=?", (e,), one=True): raise E("Ei email diye account ache. Login korun")
+    old = q("SELECT sent FROM email_codes WHERE email=?", (e,), one=True)
+    if old and time.time() - old["sent"] < 60: raise E("1 minute por abar code nin")
+    code = "%06d" % secrets.randbelow(10 ** 6); site = S()["site"]
+    send_mail(e, "%s verification code: %s" % (site, code),
+              "<div style='font-family:Arial,sans-serif'><h2>%s</h2><p>Apnar verification code:</p>"
+              "<p style='font-size:32px;font-weight:bold;letter-spacing:6px'>%s</p><p>Code ta 10 minute valid thakbe. Apni na chaile ei email ignore korun.</p></div>" % (site, code))
+    run("INSERT OR REPLACE INTO email_codes(email,username,pw,code,expires,tries,sent) VALUES(?,?,?,?,?,0,?)",
+        (e, u, generate_password_hash(p), hc(code), int(time.time()) + 600, int(time.time())))
+    return jsonify(ok=1)
+@app.post("/api/signup/verify")
+def signup_verify():
+    j = request.get_json(force=True); e = (j.get("email") or "").strip().lower(); code = str(j.get("code") or "").strip()
+    r = q("SELECT * FROM email_codes WHERE email=?", (e,), one=True)
+    if not r or r["expires"] < time.time(): raise E("Code expire hoyeche, abar code nin")
+    if r["tries"] >= 5: raise E("Onek bar vul hoyeche, abar code nin")
+    if not hmac.compare_digest(r["code"], hc(code)):
+        run("UPDATE email_codes SET tries=tries+1 WHERE email=?", (e,)); raise E("Code vul")
+    try: run("INSERT INTO users(username,pw,email) VALUES(?,?,?)", (r["username"], r["pw"], e))
+    except sqlite3.IntegrityError: raise E("Username ba email age nea hoyeche, abar signup korun")
+    run("DELETE FROM email_codes WHERE email=?", (e,))
+    u = q("SELECT * FROM users WHERE email=?", (e,), one=True)
+    session.permanent = True; session["uid"] = u["id"]; return jsonify(pub(u))
 @app.post("/api/login")
 def login():
     j = request.get_json(force=True)
