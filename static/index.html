@@ -41,15 +41,27 @@ const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||"Error"
 async function act(p,b,ok){try{await api(p,b||{});await load();if(ok)alert(ok)}catch(e){alert(e.message)}}
 const val=k=>$("#f_"+k).value;
 async function sub(ep,ks,ok){const b={};ks.split(",").forEach(k=>b[k]=val(k));await act(ep,b,ok||"Done")}
-const F=(ep,fs,btn,ok)=>`<div class="card">${fs.map(f=>`<input id="f_${f[0]}" placeholder="${f[1]}" ${f[2]?`type="${f[2]}"`:""} value="${esc(f[3]||"")}">`).join("")}<button class="w" onclick="sub('${ep}','${fs.map(f=>f[0])}','${ok||""}')">${btn}</button></div>`;
+const F=(ep,fs,btn,ok)=>`<div class="card">${fs.map(f=>(f[3]!==undefined?`<div class="m" style="margin-top:8px">${esc(f[1])}</div>`:"")+`<input id="f_${f[0]}" placeholder="${f[1]}" ${f[2]?`type="${f[2]}"`:""} value="${esc(f[3]||"")}">`).join("")}<button class="w" onclick="sub('${ep}','${fs.map(f=>f[0])}','${ok||""}')">${btn}</button></div>`;
 const M=n=>"৳"+(+n).toFixed(n%1?2:0);
 const st={pending:"#f59e0b",approved:"#22c55e",done:"#22c55e",paid:"#22c55e",rejected:"#ef4444",cancelled:"#ef4444",open:"#22c55e"};
 const tg=s=>`<span class="tag" style="color:${st[s]||"#fff"}">${esc(s)}</span>`;
 const R=(t,s,x,b="")=>`<div class="card"><div class="row"><div>${t}<div class="m">${x}</div></div>${tg(s)}</div>${b?`<div class="row" style="margin-top:10px">${b}</div>`:""}</div>`;
 async function load(){try{U=await api("me")}catch{U=null}draw()}
-function auth(){return `<main style="padding-top:60px;text-align:center"><div class="logo" style="font-size:34px">${esc(C.site)}</div><p class="m">Game top-up · Tournament · Daily rewards</p>
-<div class="card" style="text-align:left"><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password"><div class="row" style="margin-top:8px"><button class="w" onclick="go('login')">Login</button><button class="w g" onclick="go('signup')">Sign up</button></div></div></main>`}
-async function go(k){try{U=await api(k,{username:$("#u").value,password:$("#p").value});draw()}catch(e){alert(e.message)}}
+let AM="login";
+function gbtn(){const g=$("#gb");if(!g)return;
+if(!C.google){g.innerHTML='<span class="m">Google login ekhono chalu nai (Admin > Settings > google_client_id)</span>';return}
+if(!(window.google&&google.accounts)){if(!window._gl){window._gl=1;const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.onload=gbtn;
+s.onerror=()=>{window._gl=0;g.innerHTML='<span class="m">Google script load hoy nai. Internet/adblock check korun</span>'};document.head.appendChild(s)}else setTimeout(gbtn,300);return}
+google.accounts.id.initialize({client_id:C.google,callback:async r=>{try{U=await api("google",{credential:r.credential});draw()}catch(e){alert(e.message)}}});
+g.innerHTML="";google.accounts.id.renderButton(g,{theme:"filled_black",size:"large",text:"continue_with",shape:"pill",width:Math.min(300,innerWidth-80)})}
+function auth(){setTimeout(gbtn,50);const s=AM=="signup";
+return `<main style="padding-top:60px;text-align:center"><div class="logo" style="font-size:34px">${esc(C.site)}</div><p class="m">Game top-up · Tournament · Daily rewards</p>
+<div class="card" style="text-align:left"><div style="text-align:center;font-weight:800;font-size:16px;margin:2px 0 8px">${s?"Create account":"Welcome back"}</div>
+<input id="u" placeholder="Username" autocomplete="username"><input id="p" type="password" placeholder="Password" autocomplete="${s?"new-password":"current-password"}">${s?'<input id="p2" type="password" placeholder="Confirm password" autocomplete="new-password">':""}
+${s?`<button class="w" style="margin-top:8px" onclick="go('signup')">Create account</button>`:`<div class="row" style="margin-top:8px"><button class="w" onclick="go('login')">Login</button><button class="w g" onclick="AM='signup';draw()">Sign up</button></div>`}
+<div class="m" style="text-align:center;margin:14px 0 4px">— or —</div><div id="gb" style="margin-top:8px;display:flex;justify-content:center;text-align:center"></div>
+${s?`<div class="m" style="text-align:center;margin-top:14px">Already account ache? <a style="color:#a855f7;font-weight:700" onclick="AM='login';draw()">Login</a></div>`:""}</div></main>`}
+async function go(k){try{if(k=="signup"&&$("#p2")&&$("#p2").value!==$("#p").value)return alert("Password duita mile nai");U=await api(k,{username:$("#u").value,password:$("#p").value});draw()}catch(e){alert(e.message)}}
 const ic=n=>/diamond/i.test(n)?"💎":/member/i.test(n)?"🎫":/uc/i.test(n)?"🎯":/level/i.test(n)?"⭐":"🎁";
 async function home(){const ps=await api("packages");let g="",h="";
 ps.forEach(p=>{if(p.game!=g){h+=(g?"</div>":"")+`<h3>${esc(g=p.game)}</h3><div class="grid">`}h+=`<div class="pk" onclick="buy(${p.id},'${esc(p.name)}',${p.price})"><i>${ic(p.name)}</i><b>${esc(p.name)}</b><span>${M(p.price)}</span></div>`});
@@ -94,17 +106,18 @@ let h=`<div class="chips">${T.map(c=>`<a class="${c==AS?"on":""}" onclick="AS='$
 const A=(k,i,a,t,c="")=>`<button class="${c}" onclick="act('admin/act/${k}/${i}/${a}')">${t}</button>`;
 if(AS=="stats"){const s=await api("admin/stats");h+=`<div class="g2">${Object.entries(s).map(([k,v])=>`<div class="stat">${k.replace(/_/g," ")}<b>${/balances|deposited|sales/.test(k)?M(v):v}</b></div>`).join("")}</div>`}
 else if(AS=="deposits"||AS=="orders"||AS=="withdrawals"){const d=await api("admin/data/"+AS),k={deposits:"deposit",orders:"order",withdrawals:"withdraw"}[AS];
-h+=d.map(x=>R(`<b>${esc(x.username)}</b> · ${esc(x.method||x.package)} ${M(x.amount??x.price)}`,x.status,esc(x.trx||x.account||"Player ID: "+x.player_id)+" · "+x.created,
+h+=d.map(x=>R(`<b>${esc(x.username)}</b> · ${esc(x.method||x.package)} ${M(x.amount??x.price)}`,x.status,esc(x.trx||x.account||"Player ID: "+x.player_id)+" · "+x.created+(x.note?"<br>"+esc(x.note):""),
 x.status=="pending"?A(k,x.id,k=="order"?"done":"approve",k=="order"?"Done":"Approve","ok")+A(k,x.id,k=="order"?"cancel":"reject",k=="order"?"Cancel+Refund":"Reject","r"):"")).join("")||'<p class="m">Kichu nai</p>'}
 else if(AS=="matches"){const d=await api("admin/data/tournaments");h+=F("admin/tournament",[["title","Match title (e.g. BR - Solo Match)"],["mode","SOLO / DUO / SQUAD"],["prize","Total prize","number"],["entry","Entry fee","number"],["per_kill","Per kill","number"],["min_level","Min level","number"],["slots","Slots (48)","number"],["start","","datetime-local"]],"Create Match");
 h+=d.map(x=>R(`<b>${esc(x.title)}</b> · ${esc(x.mode)}`,x.status,`Prize ${M(x.prize)} · Entry ${M(x.entry)} · Joined ${x.joined}/${x.slots}<br>Room: ${esc(x.room_id)||"-"} / ${esc(x.room_pass)||"-"}`,
 x.status=="open"?`<button onclick="room(${x.id})">Set Room</button><button class="ok" onclick="fin(${x.id})">Finish & Pay</button>`:"")).join("")}
-else if(AS=="packages"){const d=await api("admin/data/packages");h+=F("admin/package",[["game","Category (UID TOPUP, Level Up Pass...)"],["name","Package name"],["price","Price","number"]],"Add Package");
-h+=d.map(x=>R(`${esc(x.game)} · ${esc(x.name)}`,M(x.price),"",`<button class="r" onclick="if(confirm('Delete?'))act('admin/package/${x.id}/delete')">Delete</button>`).replace(/<span class="tag"[^>]*>/,'<span class="tag gold">')).join("")}
+else if(AS=="packages"){const d=await api("admin/data/packages");h+=F("admin/package",[["game","Category (UID TOPUP, Level Up Pass...)"],["name","Package name"],["price","Price","number"],["code","Supplier product code (auto topup er jonno)"]],"Add Package");
+h+=d.map(x=>R(`${esc(x.game)} · ${esc(x.name)}`,M(x.price),"Code: "+(esc(x.code)||"-"),`<button onclick="pcode(${x.id})">Set Code</button><button class="r" onclick="if(confirm('Delete?'))act('admin/package/${x.id}/delete')">Delete</button>`).replace(/<span class="tag"[^>]*>/,'<span class="tag gold">')).join("")}
 else if(AS=="users"){const d=await api("admin/data/users");h+=d.map(x=>R(`<b>${esc(x.username)}</b> (#${10000+x.id})`,x.banned?"banned":"active",`${M(x.balance)} · 🪙 ${x.coins}`,
 `<button onclick="adj(${x.id})">± Balance</button>`+(x.is_admin?"":`<button class="${x.banned?"ok":"r"}" onclick="act('admin/user/${x.id}/${x.banned?"unban":"ban"}')">${x.banned?"Unban":"Ban"}</button>`))).join("")}
 else{const s=await api("admin/data/settings");h+=F("admin/settings",Object.keys(s).map(k=>[k,k,"",s[k]]),"Save Settings","Saved! Reload korle apply hobe")}
 return h}
+const pcode=i=>{const c=prompt("Supplier product code?");if(c!==null)act(`admin/package/${i}/code`,{code:c})};
 const room=i=>{const a=prompt("Room ID?");if(a===null)return;const b=prompt("Room Password?");act(`admin/tournament/${i}/room`,{room_id:a,room_pass:b||""})};
 const fin=i=>{const w=prompt("Winners (username:amount, comma diye)\nEx: rahim:500,karim:200");if(w!==null)act(`admin/tournament/${i}/finish`,{winners:w},"Match finished")};
 const adj=i=>{const d=prompt("Koto taka add (minus dile kombe)?");if(d)act(`admin/user/${i}/balance`,{delta:d})};
@@ -118,5 +131,5 @@ setInterval(()=>document.querySelectorAll(".cd").forEach(e=>{const t=new Date(e.
 const p=n=>String(n).padStart(2,"0");e.textContent=`${Math.floor(t/864e5)}d ${p(Math.floor(t/36e5)%24)}:${p(Math.floor(t/6e4)%60)}:${p(Math.floor(t/1e3)%60)}`}),1000);
 addEventListener("beforeinstallprompt",e=>{e.preventDefault();DP=e;if(U)draw()});
 if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js");
-(async()=>{C=await api("config");document.title=C.site;load()})();
+(async()=>{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json());document.title=C.site;if(location.pathname=="/admin")tab="adm";load()})();
 </script></body></html>
