@@ -15,7 +15,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "MY TOPUP"), "telegram": "https://t.m
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
-       "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
+       "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
        **{"pay_" + m: os.environ.get("PAY_NUMBER", "01XXXXXXXXX") for m in METHODS}}
 
 class E(Exception):
@@ -57,7 +57,7 @@ def init():
         CREATE TABLE IF NOT EXISTS spins(id INTEGER PRIMARY KEY, user_id INT, coins INT, created TEXT);
         CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
-        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT")]:
+        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
         if not d.execute("SELECT 1 FROM packages").fetchone():
@@ -66,6 +66,8 @@ def init():
                              ("Weekly & Monthly", "Monthly Membership", 780), ("Level Up Pass", "Level Up Pass", 70),
                              ("PUBG UC", "60 UC", 90), ("PUBG UC", "325 UC", 450)]:
                 d.execute("INSERT INTO packages(game,name,price) VALUES(?,?,?)", (g_, n, p))
+        d.execute("UPDATE packages SET section='FREE FIRE TOPUP' WHERE section='TOPUP' AND game IN ('UID TOPUP','Weekly & Monthly','Level Up Pass')")
+        d.execute("UPDATE packages SET section='OTHERS GAME' WHERE section='TOPUP' AND game='PUBG UC'")
         if os.environ.get("ADMIN_PASS"):
             d.execute("INSERT OR IGNORE INTO users(username,pw,is_admin) VALUES(?,?,1)",
                       (os.environ.get("ADMIN_USER", "admin"), generate_password_hash(os.environ["ADMIN_PASS"])))
@@ -82,8 +84,11 @@ def me():
 def admin():
     u = me()
     if not u["is_admin"]: raise E("Forbidden", 403)
-def pub(u): return dict(username=u["username"], uid=10000 + u["id"], balance=u["balance"], coins=u["coins"],
-                        is_admin=u["is_admin"], can_spin=u["last_spin"] != today())
+def pub(u):
+    one = lambda sql: q(sql, (u["id"],), one=True)["s"] or 0
+    return dict(username=u["username"], uid=10000 + u["id"], balance=u["balance"], coins=u["coins"], is_admin=u["is_admin"], can_spin=u["last_spin"] != today(),
+                added=one("SELECT SUM(amount) s FROM deposits WHERE user_id=? AND status='approved'"),
+                spent=one("SELECT SUM(price) s FROM orders WHERE user_id=? AND status!='cancelled'"), orders=one("SELECT COUNT(*) s FROM orders WHERE user_id=?"))
 def num(v, d=0):
     try: return float(v)
     except (TypeError, ValueError): return d
@@ -101,7 +106,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], min_withdraw=s["min_withdraw"],
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], min_withdraw=s["min_withdraw"],
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -187,6 +192,11 @@ def login():
 def logout(): session.clear(); return jsonify(ok=1)
 @app.get("/api/me")
 def _me(): return jsonify(pub(me()))
+@app.get("/api/latest")
+def latest():
+    r = q("SELECT o.package,o.created,u.username FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='done' ORDER BY o.id DESC LIMIT 8")
+    for x in r: x["username"] = x["username"][:3] + "***"
+    return jsonify(r)
 @app.get("/api/packages")
 def packages(): return jsonify(q("SELECT * FROM packages ORDER BY id"))
 
@@ -331,7 +341,7 @@ def a_finish(i):  # winners: "user1:500,user2:200"
 @app.post("/api/admin/package")
 def a_pkg():
     admin(); j = request.get_json(force=True)
-    run("INSERT INTO packages(game,name,price,code) VALUES(?,?,?,?)", (j.get("game") or "UID TOPUP", j.get("name") or "Package", num(j.get("price")), (j.get("code") or "").strip())); return jsonify(ok=1)
+    run("INSERT INTO packages(game,name,price,code,section) VALUES(?,?,?,?,?)", (j.get("game") or "UID TOPUP", j.get("name") or "Package", num(j.get("price")), (j.get("code") or "").strip(), (j.get("section") or "TOPUP").strip().upper())); return jsonify(ok=1)
 @app.post("/api/admin/package/<int:i>/code")
 def a_pcode(i): admin(); run("UPDATE packages SET code=? WHERE id=?", ((request.get_json(force=True).get("code") or "").strip(), i)); return jsonify(ok=1)
 @app.post("/api/admin/package/<int:i>/delete")
