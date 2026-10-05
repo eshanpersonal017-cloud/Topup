@@ -1,0 +1,49 @@
+<!doctype html><html lang="bn"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Top-up</title>
+<style>
+:root{--bg:#f4f6fb;--c:#fff;--t:#111827;--m:#6b7280;--p:#2563eb;--b:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1020;--c:#151b2e;--t:#e5e7eb;--m:#9ca3af;--b:#26304a}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--t);padding-bottom:70px}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--c);position:sticky;top:0;border-bottom:1px solid var(--b)}
+.pill{background:var(--bg);border:1px solid var(--b);border-radius:99px;padding:4px 10px;font-size:13px;margin-left:6px}
+main{padding:14px;max-width:520px;margin:auto}.card{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:12px;margin-bottom:10px}
+input,select{width:100%;padding:11px;margin:5px 0;border:1px solid var(--b);border-radius:8px;background:var(--bg);color:var(--t);font-size:15px}
+button{background:var(--p);color:#fff;border:0;border-radius:8px;padding:10px 14px;font-size:14px;cursor:pointer}button.g{background:#6b7280}button.r{background:#dc2626}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}.m{color:var(--m);font-size:13px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--c);border-top:1px solid var(--b)}
+nav a{flex:1;text-align:center;padding:12px 0;font-size:13px;color:var(--m);cursor:pointer}nav a.on{color:var(--p);font-weight:700}
+#err{color:#dc2626;font-size:14px;min-height:18px}
+</style></head><body><div id="app"></div><nav id="nav"></nav><script>
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const $=s=>document.querySelector(s);let U=null,CFG={},tab="home";
+async function api(p,b){const r=await fetch("/api/"+p,{method:b?"POST":"GET",headers:{"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined});
+const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||"Error");return j}
+const say=m=>{const e=$("#err");if(e)e.textContent=m||""};
+async function act(p,b,ok){try{await api(p,b);await load();if(ok)alert(ok)}catch(e){say(e.message);alert(e.message)}}
+async function load(){try{U=await api("me")}catch{U=null}draw()}
+function auth(){return `<main><h2>${esc(CFG.site)}</h2><div class="card"><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password">
+<div id="err"></div><div class="row"><button onclick="go('login')">Login</button><button class="g" onclick="go('signup')">Sign up</button></div></div></main>`}
+async function go(k){try{U=await api(k,{username:$("#u").value,password:$("#p").value});draw()}catch(e){say(e.message)}}
+async function home(){const ps=await api("packages");let g="";
+return `<div class="card"><b>Player ID</b><input id="pid" inputmode="numeric" placeholder="Free Fire / PUBG Player ID"></div>`+
+ps.map(p=>(p.game!=g?`<h3>${g=p.game,esc(g)}</h3>`:"")+`<div class="card row"><div>${esc(p.name)}<div class="m">৳${p.price}</div></div><button onclick="buy(${p.id})">Buy</button></div>`).join("")}
+function buy(id){const v=$("#pid").value.trim();if(!v)return alert("Player ID din");if(confirm("Order korben?"))act("order",{package_id:id,player_id:v},"Order hoyeche!")}
+function wallet(){return `<div class="card"><b>Add Money</b><p class="m">Send Money kore ei number e pathan: <b>${esc(CFG.pay_number)}</b></p>
+<select id="dm">${CFG.methods.map(m=>`<option>${esc(m)}</option>`).join("")}</select><input id="da" type="number" placeholder="Amount (৳)"><input id="dt" placeholder="Transaction ID">
+<div id="err"></div><button onclick="act('deposit',{method:$('#dm').value,amount:$('#da').value,trx:$('#dt').value},'Request pathano hoyeche, admin approve korle balance ashbe')">Submit</button></div>`}
+async function hist(){const h=await api("orders");const c={pending:"#d97706",approved:"#16a34a",done:"#16a34a",rejected:"#dc2626",cancelled:"#dc2626"};
+const row=(t,s,x)=>`<div class="card row"><div>${t}<div class="m">${esc(x)}</div></div><b style="color:${c[s]}">${esc(s)}</b></div>`;
+return "<h3>Orders</h3>"+(h.orders.map(o=>row(esc(o.package)+" · ৳"+o.price,o.status,"ID "+o.player_id+" · "+o.created)).join("")||'<p class="m">Kono order nai</p>')+
+"<h3>Deposits</h3>"+(h.deposits.map(d=>row(esc(d.method)+" ৳"+d.amount,d.status,d.trx+" · "+d.created)).join("")||'<p class="m">Kono deposit nai</p>')}
+function spin(){return `<div class="card" style="text-align:center"><h3>Daily Spin</h3><p class="m">Protidin 1 bar. 100 coin = ৳10</p><div id="err"></div>
+<button onclick="doSpin()">Spin</button> <button class="g" onclick="act('redeem',{},'Coin balance e add hoyeche')">Redeem coins</button></div>`}
+async function doSpin(){try{const r=await api("spin",{});alert("Apni "+r.won+" coin jitechen!");load()}catch(e){alert(e.message)}}
+async function adm(){const a=await api("admin/list");const b=(u,t)=>`<button onclick="act('admin/${u}')">${t}</button>`;
+return "<h3>Pending Deposits</h3>"+a.deposits.map(d=>`<div class="card"><b>${esc(d.username)}</b> ${esc(d.method)} ৳${d.amount}<div class="m">${esc(d.trx)}</div><div class="row">${b(`deposit/${d.id}/approve`,"Approve")}${b(`deposit/${d.id}/reject`,"Reject").replace("<button","<button class=r")}</div></div>`).join("")+
+"<h3>Pending Orders</h3>"+a.orders.map(o=>`<div class="card"><b>${esc(o.username)}</b> ${esc(o.package)}<div class="m">Player ID: ${esc(o.player_id)} · ৳${o.price}</div><div class="row">${b(`order/${o.id}/done`,"Done")}${b(`order/${o.id}/cancel`,"Cancel+Refund").replace("<button","<button class=r")}</div></div>`).join("")}
+async function draw(){if(!U){$("#nav").innerHTML="";$("#app").innerHTML=auth();return}
+const tabs=[["home","Home"],["wallet","Add Money"],["hist","Orders"],["spin","Spin"]];if(U.is_admin)tabs.push(["adm","Admin"]);
+$("#nav").innerHTML=tabs.map(t=>`<a class="${t[0]==tab?"on":""}" onclick="tab='${t[0]}';draw()">${t[1]}</a>`).join("");
+const v={home,wallet,hist,spin,adm}[tab];$("#app").innerHTML=`<header><b>${esc(CFG.site)}</b><span><span class="pill">৳${(+U.balance).toFixed(2)}</span><span class="pill">🪙${U.coins}</span><span class="pill" onclick="act('logout',{}).then(()=>{U=null;draw()})">Logout</span></span></header><main>${await v()}</main>`}
+(async()=>{CFG=await api("config");load()})();
+</script></body></html>
