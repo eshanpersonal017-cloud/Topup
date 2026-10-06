@@ -171,5 +171,5 @@ setInterval(()=>document.querySelectorAll(".cd").forEach(e=>{const t=new Date(e.
 const p=n=>String(n).padStart(2,"0");e.textContent=`${Math.floor(t/864e5)}d ${p(Math.floor(t/36e5)%24)}:${p(Math.floor(t/6e4)%60)}:${p(Math.floor(t/1e3)%60)}`}),1000);
 addEventListener("beforeinstallprompt",e=>{e.preventDefault();DP=e;if(U)draw()});
 if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js");
-(async()=>{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json());document.title=C.site;const dq=new URLSearchParams(location.search).get("dep");if(dq){history.replaceState(null,"","/");tab="wallet";setTimeout(()=>alert(dq=="ok"?"✅ Payment safol! Balance add hoyeche":dq=="cancel"?"Payment cancel hoyeche":"Payment verify hoyni. Balance na ashle support e jogajog korun"),900)}load()})();
+(async()=>{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json());document.title=C.site;const dq=new URLSearchParams(location.search).get("dep");if(dq){history.replaceState(null,"","/");tab="wallet";setTimeout(()=>alert(dq=="ok"?"✅ Payment safol! Balance kichukkhon-er moddhe add hobe (na hole My Transactions dekhun)":dq=="cancel"?"Payment cancel hoyeche":"Payment verify hoyni. Balance na ashle support e jogajog korun"),900)}load()})();
 </script></body></html>
