@@ -117,14 +117,14 @@ return `<div class="seg"><a class="${mt=="list"?"on":""}" onclick="mt='list';dra
 <button class="g" onclick="alert(${x.mine?`'Room ID: ${esc(x.room_id)||"-"}\\nPassword: ${esc(x.room_pass)||"-"}'`:"'Age match join korun'"})">Room</button></div></div>`}).join("")||'<p class="m" style="text-align:center">Kono match nai</p>')}
 function jn(id,e){const n=prompt("Apnar in-game name?");if(n&&confirm(`Entry fee ${M(e)} katbe. Join korben?`))act(`tournament/${id}/join`,{ign:n},"✅ Joined!")}
 async function wallet(){const h=await api("history");
-return `<div class="hero"><div class="m" style="color:#fff9">Wallet Balance</div><h2 style="font-size:34px;margin:2px 0">${M(U.balance)}</h2><div>🪙 ${U.coins} coins</div></div>
-<div class="card"><b>➕ Add Money</b><select id="dm" onchange="$('#pn').textContent=C.methods.find(m=>m.m==this.value).n">${C.methods.map(m=>`<option>${esc(m.m)}</option>`).join("")}</select>
+return `<div class="hero"><div style="opacity:.8;font-size:12px">Wallet Balance</div><h2 style="font-size:34px;margin:2px 0">${M(U.balance)}</h2><div>🪙 ${U.coins} coins</div></div>`+(C.auto?
+`<div class="card"><h3 style="margin-top:0"><span class="sn">1</span>Select Payment Method</h3><div class="pay" style="max-width:170px"><div style="font-size:15px">bKash · Nagad · Rocket</div><b>AUTO PAYMENT</b></div></div>
+<div class="card"><h3 style="margin-top:0"><span class="sn">2</span>Add Money</h3><div class="m">Amount</div><input id="da" type="number" inputmode="numeric" placeholder="Amount (৳)"><button class="w" onclick="addm()">Add Money</button></div>`:
+`<div class="card"><b>➕ Add Money</b><select id="dm" onchange="$('#pn').textContent=C.methods.find(m=>m.m==this.value).n">${C.methods.map(m=>`<option>${esc(m.m)}</option>`).join("")}</select>
 <p class="m">Ei number/address e Send Money korun: <b class="gold" id="pn">${esc(C.methods[0].n)}</b></p><input id="da" type="number" placeholder="Amount (৳)"><input id="dt" placeholder="Transaction ID">
-<button class="w" onclick="act('deposit',{method:val('dm'),amount:val('da'),trx:val('dt')},'Request pathano hoyeche. Admin approve korle balance ashbe')">Submit</button></div>
-<div class="card"><b>💸 Withdraw</b> <span class="m">(min ${C.min_withdraw})</span><select id="wm">${C.methods.map(m=>`<option>${esc(m.m)}</option>`).join("")}</select><input id="wa" placeholder="Apnar number / address"><input id="wn" type="number" placeholder="Amount (৳)">
-<button class="w" onclick="act('withdraw',{method:val('wm'),account:val('wa'),amount:val('wn')},'Withdraw request pathano hoyeche')">Withdraw</button></div>`+
-"<h3>Deposits</h3>"+(h.deposits.map(d=>R(esc(d.method)+" "+M(d.amount),d.status,esc(d.trx)+" · "+d.created)).join("")||'<p class="m">Kichu nai</p>')+
-"<h3>Withdrawals</h3>"+(h.withdrawals.map(d=>R(esc(d.method)+" "+M(d.amount),d.status,esc(d.account)+" · "+d.created)).join("")||'<p class="m">Kichu nai</p>')}
+<button class="w" onclick="act('deposit',{method:$('#dm').value,amount:$('#da').value,trx:$('#dt').value},'Request pathano hoyeche. Admin approve korle balance ashbe')">Submit</button></div>`)+
+"<h3>Deposits</h3>"+(h.deposits.map(d=>R(esc(d.method)+" "+M(d.amount),d.status,esc(d.trx)+" · "+d.created)).join("")||'<p class="m">Kichu nai</p>')+foot()}
+async function addm(){const a=+$("#da").value;if(!(a>=10))return alert("Minimum 10 taka din");try{const r=await api("deposit/auto",{amount:a});location.href=r.url}catch(e){alert(e.message)}}
 async function spin(){const s=await api("spins"),W=C.wheel,col=["#ef4444","#f59e0b","#22c55e","#06b6d4","#6366f1","#a855f7","#ec4899","#f97316"];
 const bg=W.map((_,i)=>`${col[i]} ${i*45}deg ${(i+1)*45}deg`).join(",");
 return `<div class="card" style="text-align:center"><h3 style="margin-top:0">🎡 Daily Spin</h3><div class="ptr">▼</div><div id="wh" style="background:conic-gradient(${bg});transform:rotate(${ROT}deg)">${W.map((w,i)=>`<b style="transform:rotate(${i*45+22.5}deg) translateY(-98px)">${w}</b>`).join("")}</div>
@@ -134,7 +134,7 @@ async function doSpin(){try{const r=await api("spin",{});ROT=360*6-(r.idx*45+22.
 async function me_(){return `<div class="card" style="text-align:center;background:var(--g);color:#fff"><div class="av">${esc(U.username[0].toUpperCase())}</div><b style="font-size:18px">${esc(U.username)}</b></div>
 <div class="g2">${[["🆔",U.uid,"USER ID"],["👛",M(U.balance),"TOTAL WALLET"],["➕",M(U.added),"TOTAL ADDED"],["🪙",U.coins,"TOTAL COINS"],["🛒",M(U.spent),"TOTAL SPENT"],["📦",U.orders,"TOTAL ORDERS"]].map(x=>`<div class="card" style="text-align:center;margin:0"><div style="font-size:26px">${x[0]}</div><b style="font-size:20px;color:#1d4ed8">${x[1]}</b><div class="m">${x[2]}</div></div>`).join("")}</div><div style="height:12px"></div>
 ${U.is_admin?`<button class="w" onclick="tab='adm';draw()">🛠 Admin Panel</button><div style="height:8px"></div>`:""}<button class="w r" onclick="act('logout').then(()=>{U=null;draw()})">Logout</button>`+foot()}
-async function adm(){const T=["stats","deposits","orders","withdrawals","matches","packages","users","settings"];
+async function adm(){const T=["stats","deposits","orders","matches","packages","users","settings"];
 let h=`<div class="chips">${T.map(c=>`<a class="${c==AS?"on":""}" onclick="AS='${c}';draw()">${c}</a>`).join("")}</div>`;
 const A=(k,i,a,t,c="")=>`<button class="${c}" onclick="act('admin/act/${k}/${i}/${a}')">${t}</button>`;
 if(AS=="stats"){const s=await api("admin/stats");h+=`<div class="g2">${Object.entries(s).map(([k,v])=>`<div class="stat">${k.replace(/_/g," ")}<b>${/balances|deposited|sales/.test(k)?M(v):v}</b></div>`).join("")}</div>`}
@@ -167,5 +167,5 @@ setInterval(()=>document.querySelectorAll(".cd").forEach(e=>{const t=new Date(e.
 const p=n=>String(n).padStart(2,"0");e.textContent=`${Math.floor(t/864e5)}d ${p(Math.floor(t/36e5)%24)}:${p(Math.floor(t/6e4)%60)}:${p(Math.floor(t/1e3)%60)}`}),1000);
 addEventListener("beforeinstallprompt",e=>{e.preventDefault();DP=e;if(U)draw()});
 if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js");
-(async()=>{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json());document.title=C.site;if(location.pathname=="/admin")tab="adm";load()})();
+(async()=>{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json());document.title=C.site;if(location.pathname=="/admin")tab="adm";const dq=new URLSearchParams(location.search).get("dep");if(dq){history.replaceState(null,"","/");tab="wallet";setTimeout(()=>alert(dq=="ok"?"✅ Payment safol! Balance add hoyeche":dq=="cancel"?"Payment cancel hoyeche":"Payment verify hoyni. Balance na ashle support e jogajog korun"),900)}load()})();
 </script></body></html>
