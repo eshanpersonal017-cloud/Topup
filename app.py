@@ -1,5 +1,5 @@
 import os, re, time, random, sqlite3, json, hashlib, hmac, secrets, urllib.request, urllib.parse, urllib.error
-from flask import Flask, request, jsonify, session, g, send_from_directory, Response
+from flask import Flask, request, jsonify, session, g, send_from_directory, Response, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__, static_folder="static")
@@ -8,10 +8,10 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", P
 DB = os.environ.get("DB_PATH", "data.db")  # Railway: Volume mount /data + DB_PATH=/data/data.db
 METHODS = ["bKash", "Nagad", "Rocket", "Binance", "Bybit"]
 WHEEL = [5, 7, 10, 12, 15, 25, 8, 20]
-DEF = {"site": os.environ.get("SITE_NAME", "MY TOPUP"), "telegram": "https://t.me/yourchannel",
+DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t.me/yourchannel",
        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
        "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""),
-       "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
+       "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
@@ -38,7 +38,7 @@ def run(sql, a=()):
     d = db(); n = d.execute(sql, a).rowcount; d.commit(); return n
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -106,7 +106,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], min_withdraw=s["min_withdraw"],
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], auto=bool(s["pay_url"] and s["pay_key"]),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -200,19 +200,53 @@ def latest():
 @app.get("/api/packages")
 def packages(): return jsonify(q("SELECT * FROM packages ORDER BY id"))
 
+
+def gw(path, body):
+    s = S()
+    if not s["pay_url"] or not s["pay_key"]: raise E("Auto payment ekhono chalu nai", 500)
+    base = s["pay_url"].strip().rstrip("/").split("/api/")[0]
+    req = urllib.request.Request(base + path, json.dumps(body).encode(), {"RT-UDDOKTAPAY-API-KEY": s["pay_key"], "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r: return json.loads(r.read().decode() or "{}")
+    except Exception: raise E("Payment gateway e connect hoy nai, pore abar chesta korun", 502)
+def dsig(uid): return hmac.new(app.secret_key.encode(), ("dep:%s" % uid).encode(), hashlib.sha256).hexdigest()[:24]
+def settle(inv):  # gateway theke verify kore balance add kore (ekbar-i)
+    r = gw("/api/verify-payment", {"invoice_id": inv})
+    if str(r.get("status", "")).upper() != "COMPLETED": raise E("Payment complete hoyni")
+    md = r.get("metadata") or {}; amt = num(r.get("amount"))
+    try: uid = int(md.get("uid") or 0)
+    except (TypeError, ValueError): uid = 0
+    if not uid or amt <= 0 or not hmac.compare_digest(str(md.get("sig") or ""), dsig(uid)): raise E("Payment info vul")
+    try: run("INSERT INTO deposits(user_id,method,trx,amount,status,created) VALUES(?,?,?,?,'approved',?)", (uid, str(r.get("payment_method") or "auto")[:20], "UP-" + str(inv)[:60], amt, now()))
+    except sqlite3.IntegrityError: return False
+    credit(uid, amt); return True
+def clientip(): return (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[-1].strip()
+@app.post("/api/deposit/auto")
+def deposit_auto():
+    u = me(); amt = num((request.get_json(force=True) or {}).get("amount"))
+    if amt < 10 or amt > 50000: raise E("Minimum 10 ar maximum 50000 taka")
+    base = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0] + "://" + request.host
+    r = gw("/api/checkout-v2", {"full_name": u["username"], "email": u["email"] or "customer@example.com", "amount": str(amt),
+        "metadata": {"uid": u["id"], "sig": dsig(u["id"])}, "redirect_url": base + "/api/deposit/return", "return_type": "GET",
+        "cancel_url": base + "/?dep=cancel", "webhook_url": base + "/api/deposit/webhook"})
+    if not r.get("payment_url"): raise E("Payment link toiri hoy nai", 502)
+    return jsonify(url=r["payment_url"])
+@app.get("/api/deposit/return")
+def deposit_return():
+    limit("ret:" + clientip(), 30, 600)
+    try: settle(request.args.get("invoice_id", "")); return redirect("/?dep=ok")
+    except E: return redirect("/?dep=fail")
+@app.post("/api/deposit/webhook")
+def deposit_webhook():
+    try: settle((request.get_json(silent=True) or {}).get("invoice_id", ""))
+    except E: pass
+    return "ok"
 @app.post("/api/deposit")
 def deposit():
     u = me(); j = request.get_json(force=True); amt = num(j.get("amount")); trx = (j.get("trx") or "").strip().upper()
     if amt < 10 or j.get("method") not in METHODS or not 6 <= len(trx) <= 64: raise E("Sob info thik moto din")
     try: run("INSERT INTO deposits(user_id,method,trx,amount,created) VALUES(?,?,?,?,?)", (u["id"], j["method"], trx, amt, now()))
     except sqlite3.IntegrityError: raise E("Ei TrxID age use hoyeche")
-    return jsonify(ok=1)
-@app.post("/api/withdraw")
-def withdraw():
-    u = me(); j = request.get_json(force=True); amt = num(j.get("amount")); acc = (j.get("account") or "").strip()[:80]
-    if j.get("method") not in METHODS or not acc or amt < num(S()["min_withdraw"], 50): raise E("Minimum " + S()["min_withdraw"] + " taka, number/address din")
-    if not run("UPDATE users SET balance=balance-? WHERE id=? AND balance>=?", (amt, u["id"], amt)): raise E("Balance kom")
-    run("INSERT INTO withdrawals(user_id,method,account,amount,created) VALUES(?,?,?,?,?)", (u["id"], j["method"], acc, amt, now()))
     return jsonify(ok=1)
 def dig(o, path):
     for k in path.split("."): o = o.get(k) if isinstance(o, dict) else None
@@ -305,7 +339,7 @@ def a_stats():
     admin(); c = lambda s: q(s, one=True)["c"] or 0
     return jsonify(users=c("SELECT COUNT(*) c FROM users"), balances=c("SELECT SUM(balance) c FROM users"),
         pending_deposits=c("SELECT COUNT(*) c FROM deposits WHERE status='pending'"), pending_orders=c("SELECT COUNT(*) c FROM orders WHERE status='pending'"),
-        pending_withdraws=c("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'"), deposited=c("SELECT SUM(amount) c FROM deposits WHERE status='approved'"),
+        deposited=c("SELECT SUM(amount) c FROM deposits WHERE status='approved'"),
         sales=c("SELECT SUM(price) c FROM orders WHERE status='done'"), open_matches=c("SELECT COUNT(*) c FROM tournaments WHERE status='open'"))
 T = {"deposit": ("deposits", {"approve": "approved", "reject": "rejected"}), "order": ("orders", {"done": "done", "cancel": "cancelled"}),
      "withdraw": ("withdrawals", {"approve": "paid", "reject": "rejected"})}
