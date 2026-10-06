@@ -11,7 +11,7 @@ WHEEL = [5, 7, 10, 12, 15, 25, 8, 20]
 DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t.me/yourchannel",
        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
        "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""),
-       "sms_secret": os.environ.get("SMS_SECRET", ""), "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
+       "sms_secret": os.environ.get("SMS_SECRET", ""), "wm_public": os.environ.get("WM_PUBLIC", ""), "wm_secret": os.environ.get("WM_SECRET", ""), "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
@@ -43,7 +43,7 @@ def give_reward(oid):  # order complete hole coin reward (ekbar)
     if r > 0 and run("UPDATE orders SET reward=? WHERE id=? AND reward=0", (r, oid)): run("UPDATE users SET coins=coins+? WHERE id=?", (r, o["user_id"]))
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url", "wm_public", "wm_secret")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -63,7 +63,9 @@ def init():
         CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS pay_sms(id INTEGER PRIMARY KEY, trx TEXT UNIQUE, amount REAL, method TEXT, sender TEXT, raw TEXT, used INTEGER DEFAULT 0, created TEXT);
         CREATE TABLE IF NOT EXISTS cats(name TEXT PRIMARY KEY, img TEXT);
-        CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
+        CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);
+        CREATE TABLE IF NOT EXISTS wm_orders(order_id TEXT PRIMARY KEY, user_id INT, amount REAL, status TEXT DEFAULT 'new', created TEXT);
+        CREATE TABLE IF NOT EXISTS wm_log(id INTEGER PRIMARY KEY, at TEXT, ok INT, note TEXT, body TEXT);""")
         for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
@@ -113,7 +115,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool(s["pay_url"] and s["pay_key"]),
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool((s["wm_public"] and s["wm_secret"]) or (s["pay_url"] and s["pay_key"])),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -247,6 +249,12 @@ def deposit_auto():
     u = me(); amt = num((request.get_json(force=True) or {}).get("amount"))
     if amt < 10 or amt > 50000: raise E("Minimum 10 ar maximum 50000 taka")
     base = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0] + "://" + request.host
+    s = S()
+    if s["wm_public"] and s["wm_secret"]:  # Waitmark Pay
+        oid = "TRE-%d-%s" % (u["id"], secrets.token_hex(4))
+        run("INSERT INTO wm_orders(order_id,user_id,amount,status,created) VALUES(?,?,?,'new',?)", (oid, u["id"], amt, now()))
+        qs = urllib.parse.urlencode(dict(public_key=s["wm_public"], amount="%.2f" % amt, order_id=oid, success_url=base + "/api/wm/callback"))
+        return jsonify(url="https://pay.waitmark.com/checkout?" + qs)
     r = gw("/api/checkout-v2", {"full_name": u["username"], "email": u["email"] or "customer@example.com", "amount": str(amt),
         "metadata": {"uid": u["id"], "sig": dsig(u["id"])}, "redirect_url": base + "/api/deposit/return", "return_type": "GET",
         "cancel_url": base + "/?dep=cancel", "webhook_url": base + "/api/deposit/webhook"})
@@ -261,6 +269,29 @@ def deposit_return():
 def deposit_webhook():
     try: settle((request.get_json(silent=True) or {}).get("invoice_id", ""))
     except E: pass
+    return "ok"
+def wmlog(ok, note, body):
+    run("INSERT INTO wm_log(at,ok,note,body) VALUES(?,?,?,?)", (now(), ok, note[:80], body[:600]))
+    run("DELETE FROM wm_log WHERE id<(SELECT MAX(id)-40 FROM wm_log)")
+@app.route("/api/wm/callback", methods=["GET", "POST"])
+def wm_callback():  # Waitmark: signed webhook (POST) + customer return (GET/POST)
+    if request.method == "GET": return redirect("/?dep=ok")
+    limit("wm:" + clientip(), 300, 600)
+    raw = request.get_data(); body = raw.decode("utf-8", "replace"); sig = request.headers.get("X-Waitmark-Signature", "").strip().lower()
+    if not sig:  # browser return, webhook noy; balance shudhu signed webhook e add hoy
+        wmlog(0, "Signature header nai (customer return?)", body); return redirect("/?dep=ok", 303)
+    sec = S()["wm_secret"]
+    if not sec or not hmac.compare_digest(hmac.new(sec.encode(), raw, hashlib.sha256).hexdigest().encode(), sig.encode()):
+        wmlog(0, "Signature mile ni", body); return "Unauthorized", 403
+    j = request.get_json(silent=True, force=True); j = j if isinstance(j, dict) else {}
+    if str(j.get("status", "")).lower() != "completed": wmlog(0, "status completed na", body); return "ok"
+    oid = str(j.get("order_id") or j.get("orderId") or ""); o = q("SELECT * FROM wm_orders WHERE order_id=?", (oid,), one=True)
+    if not o: wmlog(0, "order paoa jayni", body); return "ok"
+    if j.get("amount") is not None and num(j.get("amount")) < o["amount"] - 0.5: wmlog(0, "amount kom", body); return "ok"
+    if run("UPDATE wm_orders SET status='paid' WHERE order_id=? AND status='new'", (oid,)):
+        try: run("INSERT INTO deposits(user_id,method,trx,amount,status,created) VALUES(?,?,?,?,'approved',?)", (o["user_id"], "Waitmark", "WM-" + oid, o["amount"], now()))
+        except sqlite3.IntegrityError: pass
+        credit(o["user_id"], o["amount"]); wmlog(1, "balance add: " + oid, body)
     return "ok"
 SMS_FROM = re.compile(r"bkash|nagad|rocket|16216|dbbl|upay", re.I)
 def parse_sms(txt):
@@ -401,7 +432,7 @@ def redeem():
     return jsonify(ok=1)
 
 # ---------------- ADMIN ----------------
-AD = {"sms": "SELECT * FROM pay_sms ORDER BY id DESC LIMIT 60", "deposits": "SELECT d.*,u.username FROM deposits d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
+AD = {"wmlog": "SELECT * FROM wm_log ORDER BY id DESC LIMIT 40", "sms": "SELECT * FROM pay_sms ORDER BY id DESC LIMIT 60", "deposits": "SELECT d.*,u.username FROM deposits d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "orders": "SELECT d.*,u.username FROM orders d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "withdrawals": "SELECT d.*,u.username FROM withdrawals d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "tournaments": "SELECT t.*,(SELECT COUNT(*) FROM joins j WHERE j.tid=t.id) joined FROM tournaments t ORDER BY id DESC LIMIT 40",
