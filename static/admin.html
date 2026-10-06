@@ -39,10 +39,11 @@ function sheet(title,body,save,label="Save"){const d=document.createElement("div
 document.body.appendChild(d);d.onclick=e=>{if(e.target==d)d.remove()};$("#shok").onclick=async()=>{try{await save();d.remove();await go()}catch(e){toast(e.message,1)}}}
 const NAV=[["dash","📊","Dashboard"],["orders","🧾","Orders"],["deps","💳","Deposits"],["sms","📩","SMS Inbox"],["prod","📦","Products"],["users","👥","Users"],["match","🏆","Tournaments"],["set","⚙️","Site Settings"]];
 let P="dash",FL="all",ST={},ME=null,Q="",SG="General",DATA={};
-const SG_=[["General","🏠",[["site","Site name"],["telegram","Telegram link"],["notice","Notice ticker (home)"],["popup","Home popup text"],["rules","Rules & Conditions (order page)","ta"]]],
+const SG_=[["General","🏠",[["site","Site name"],["telegram","Telegram link"],["notice","Notice ticker (home)"],["popup","Home popup text"],["rules","Rules & Conditions (order page)","ta"],["coin_rate","Coin reward per 100৳ order (0 = off)"],["pending_note","Pending order note","ta"]]],
 ["Banner","🖼️",[["banner_title","Banner title"],["banner_text","Banner text"],["banner_img","Banner image URL"]]],
 ["Payment","💳",[["sms_secret","SMS secret (TrxID auto verify)","pw"],["pay_url","Gateway URL (optional)"],["pay_key","Auto payment: API key","pw"],["pay_bKash","Manual: bKash number"],["pay_Nagad","Manual: Nagad number"],["pay_Rocket","Manual: Rocket number"],["pay_Binance","Manual: Binance"],["pay_Bybit","Manual: Bybit"]]],
 ["Email","✉️",[["mail_url","Apps Script URL"],["mail_secret","Apps Script secret","pw"],["mail_key","Brevo API key (optional)","pw"],["mail_from","Brevo sender email"]]],
+["Player Check","🔍",[["uid_url","Lookup URL (jekhane {uid} thakbe)"],["uid_name_field","Name field (jemon nickname)"],["uid_level_field","Level field (jemon level)"]]],
 ["Google","🔑",[["google_client_id","Google Client ID"]]],
 ["Auto Top-up","⚡",[["auto_topup","Auto top-up (on/off)"],["sup_url","Supplier URL"],["sup_key","Supplier key","pw"],["sup_header","Header name"],["sup_prefix","Header prefix"],["sup_body","Request body","ta"],["sup_ok_field","Success field"],["sup_ok_value","Success value"],["sup_fail_values","Fail values"]]]];
 function shell(b){const ct=ST.pending_orders||0,cd=ST.pending_deposits||0;return `<div id="ov" onclick="menu(0)"></div><aside id="side"><div class="brand">⚡ ${esc(ME.site||"ADMIN")}</div>${NAV.map(n=>`<a class="nv ${n[0]==P?"on":""}" onclick="nav('${n[0]}')"><i>${n[1]}</i>${n[2]}${n[0]=="orders"&&ct?`<span class="bd">${ct}</span>`:""}${n[0]=="deps"&&cd?`<span class="bd">${cd}</span>`:""}</a>`).join("")}
