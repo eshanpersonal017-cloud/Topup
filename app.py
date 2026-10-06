@@ -15,7 +15,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
-       "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
+       "uid_url": os.environ.get("UID_URL", ""), "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
        **{"pay_" + m: os.environ.get("PAY_NUMBER", "01XXXXXXXXX") for m in METHODS}}
 
 class E(Exception):
@@ -36,9 +36,14 @@ def q(sql, a=(), one=False):
     return (dict(r[0]) if r else None) if one else [dict(x) for x in r]
 def run(sql, a=()):
     d = db(); n = d.execute(sql, a).rowcount; d.commit(); return n
+def give_reward(oid):  # order complete hole coin reward (ekbar)
+    o = q("SELECT * FROM orders WHERE id=?", (oid,), one=True)
+    if not o or o["status"] != "done" or o["reward"]: return
+    r = int(o["price"] * num(S()["coin_rate"]) / 100)
+    if r > 0 and run("UPDATE orders SET reward=? WHERE id=? AND reward=0", (r, oid)): run("UPDATE users SET coins=coins+? WHERE id=?", (r, o["user_id"]))
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -59,7 +64,7 @@ def init():
         CREATE TABLE IF NOT EXISTS pay_sms(id INTEGER PRIMARY KEY, trx TEXT UNIQUE, amount REAL, method TEXT, sender TEXT, raw TEXT, used INTEGER DEFAULT 0, created TEXT);
         CREATE TABLE IF NOT EXISTS cats(name TEXT PRIMARY KEY, img TEXT);
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
-        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1")]:
+        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
         if not d.execute("SELECT 1 FROM packages").fetchone():
@@ -108,7 +113,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool(s["pay_url"] and s["pay_key"]),
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool(s["pay_url"] and s["pay_key"]),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -300,6 +305,44 @@ def deposit():
         d = q("SELECT * FROM deposits WHERE trx=?", (trx,), one=True)
         if not (d and d["user_id"] == u["id"] and d["status"] == "pending"): raise E("Ei TrxID age use hoyeche")
     return jsonify(ok=1, status="approved" if auto_match(trx) else "pending")
+def dig(o, path):
+    for k in path.split("."): o = o.get(k) if isinstance(o, dict) else None
+    return o
+def fulfill(oid, code, pid):  # supplier API call. None = manual order
+    s = S()
+    if s["auto_topup"] != "on" or not s["sup_url"] or not code: return None
+    body = s["sup_body"].replace("{uid}", pid).replace("{code}", code).replace("{order_id}", str(oid))
+    h = {"Content-Type": "application/json"}
+    if s["sup_key"]: h[s["sup_header"] or "Authorization"] = (s["sup_prefix"] or "") + s["sup_key"]
+    try:
+        with urllib.request.urlopen(urllib.request.Request(s["sup_url"], body.encode(), h, method="POST"), timeout=25) as r: txt = r.read().decode()[:400]
+    except urllib.error.HTTPError as e: return ("pending", "Supplier HTTP %s" % e.code)
+    except Exception as e: return ("pending", "Supplier error: " + str(e)[:80])  # unknown result: admin check korbe, auto refund hobe na
+    try: v = str(dig(json.loads(txt), s["sup_ok_field"])).lower()
+    except ValueError: v = ""
+    if v == s["sup_ok_value"].lower(): return ("done", "Auto: " + txt[:150])
+    if v in [x.strip().lower() for x in s["sup_fail_values"].split(",")]: return ("cancelled", "Auto failed: " + txt[:150])
+    return ("pending", "Supplier: " + txt[:150])
+PCACHE = {}
+@app.get("/api/player/<uid>")
+def player(uid):  # Player ID er name/level (admin e set kora lookup API theke)
+    u = me()
+    if not re.fullmatch(r"\d{5,15}", uid): raise E("Sothik Player ID din")
+    s = S()
+    if not s["uid_url"]: return jsonify(configured=False)
+    limit("pc:%s" % u["id"], 20, 60)
+    hit = PCACHE.get(uid)
+    if hit and time.time() - hit[0] < 600: return jsonify(hit[1])
+    try:
+        req = urllib.request.Request(s["uid_url"].replace("{uid}", uid), headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=12) as r: j = json.loads(r.read(200000).decode())
+    except Exception: raise E("Player info ante parini, pore abar chesta korun", 502)
+    name = dig(j, s["uid_name_field"] or "nickname"); lv = dig(j, s["uid_level_field"] or "level")
+    out = dict(configured=True, found=bool(name), name=str(name or "")[:40], level=lv if isinstance(lv, (int, float, str)) else None)
+    if out["found"]:
+        if len(PCACHE) > 2000: PCACHE.clear()
+        PCACHE[uid] = (time.time(), out)
+    return jsonify(out)
 @app.post("/api/order")
 def order():
     u = me(); j = request.get_json(force=True)
@@ -313,6 +356,7 @@ def order():
     if res:
         run("UPDATE orders SET status=?, note=? WHERE id=?", (res[0], res[1], oid))
         if res[0] == "cancelled": credit(u["id"], p["price"])
+        if res[0] == "done": give_reward(oid)
     return jsonify(ok=1, status=res[0] if res else "pending")
 @app.get("/api/history")
 def history():
@@ -386,6 +430,7 @@ def a_act(k, i, a):
     if not r or not run(f"UPDATE {tb} SET status=? WHERE id=? AND status='pending'", (m[a], i)): raise E("Already processed")
     if (k, a) == ("deposit", "approve"): credit(r["user_id"], r["amount"])
     if (k, a) == ("order", "cancel"): credit(r["user_id"], r["price"])
+    if (k, a) == ("order", "done"): give_reward(i)
     if (k, a) == ("withdraw", "reject"): credit(r["user_id"], r["amount"])
     return jsonify(ok=1)
 @app.post("/api/admin/tournament")
