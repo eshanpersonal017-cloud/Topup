@@ -11,7 +11,7 @@ WHEEL = [5, 7, 10, 12, 15, 25, 8, 20]
 DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t.me/yourchannel",
        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
        "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""),
-       "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
+       "sms_secret": os.environ.get("SMS_SECRET", ""), "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
@@ -38,7 +38,7 @@ def run(sql, a=()):
     d = db(); n = d.execute(sql, a).rowcount; d.commit(); return n
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -56,6 +56,7 @@ def init():
         CREATE TABLE IF NOT EXISTS joins(id INTEGER PRIMARY KEY, tid INT, user_id INT, ign TEXT, UNIQUE(tid,user_id));
         CREATE TABLE IF NOT EXISTS spins(id INTEGER PRIMARY KEY, user_id INT, coins INT, created TEXT);
         CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS pay_sms(id INTEGER PRIMARY KEY, trx TEXT UNIQUE, amount REAL, method TEXT, sender TEXT, raw TEXT, used INTEGER DEFAULT 0, created TEXT);
         CREATE TABLE IF NOT EXISTS cats(name TEXT PRIMARY KEY, img TEXT);
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
         for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1")]:
@@ -256,31 +257,49 @@ def deposit_webhook():
     try: settle((request.get_json(silent=True) or {}).get("invoice_id", ""))
     except E: pass
     return "ok"
+SMS_FROM = re.compile(r"bkash|nagad|rocket|16216|dbbl|upay", re.I)
+def parse_sms(txt):
+    t = " ".join(str(txt).split())
+    if not re.search(r"receiv", t, re.I): return None
+    num_ = r"([\d,]+(?:\.\d+)?)"
+    a = (re.search(r"receiv\w*[^\d]{0,15}" + num_, t, re.I) or re.search(r"Amount\s*[:\-]?\s*(?:Tk\.?|BDT|৳)?\s*" + num_, t, re.I)
+         or re.search(r"(?:Tk\.?|BDT|৳)\s*" + num_ + r"\s*receiv", t, re.I))
+    x = re.search(r"(?:Trx\s*ID|Txn\s*ID|Transaction\s*ID|Trans\s*ID)\s*[:\-]?\s*([A-Za-z0-9]{6,20})", t, re.I)
+    if not a or not x: return None
+    f = re.search(r"(?:from|Sender)\s*:?\s*(?:A/C:?\s*)?(01\d{9})", t, re.I)
+    m = "bKash" if re.search(r"bkash", t, re.I) else "Nagad" if re.search(r"nagad", t, re.I) else "Rocket" if re.search(r"rocket|dbbl", t, re.I) else ""
+    return dict(amount=float(a.group(1).replace(",", "")), trx=x.group(1).upper(), method=m, sender=f.group(1) if f else "")
+def auto_match(trx):  # SMS + pending deposit mille gele auto approve
+    sm = q("SELECT * FROM pay_sms WHERE trx=? AND used=0", (trx,), one=True)
+    d = q("SELECT * FROM deposits WHERE trx=? AND status='pending'", (trx,), one=True)
+    if not sm or not d or abs(d["amount"] - sm["amount"]) > 0.5: return False
+    if not run("UPDATE pay_sms SET used=1 WHERE id=? AND used=0", (sm["id"],)): return False
+    if not run("UPDATE deposits SET status='approved' WHERE id=? AND status='pending'", (d["id"],)): return False
+    credit(d["user_id"], sm["amount"]); return True
+@app.route("/api/sms/hook", methods=["GET", "POST"])
+def sms_hook():
+    sec = S()["sms_secret"]; j = request.get_json(silent=True) or {}
+    pick = lambda *ks: next((str(v) for k in ks for v in [j.get(k) or request.form.get(k) or request.args.get(k)] if v), "")
+    got = pick("secret") or request.headers.get("X-Secret", "")
+    if not sec or not hmac.compare_digest(got, sec): return "forbidden", 403
+    limit("sms", 120, 60)
+    msg = pick("message", "content", "text", "body", "sms"); frm = pick("from", "sender", "number", "address")
+    if not msg: return "empty", 400
+    r = None if (frm and not SMS_FROM.search(frm)) else parse_sms(msg)
+    if r:
+        run("INSERT OR IGNORE INTO pay_sms(trx,amount,method,sender,raw,created) VALUES(?,?,?,?,?,?)", (r["trx"], r["amount"], r["method"], r["sender"], msg[:400], now()))
+        auto_match(r["trx"])
+    else: run("INSERT INTO pay_sms(trx,amount,method,sender,raw,used,created) VALUES(NULL,0,'',?,?,2,?)", (frm[:40], msg[:400], now()))
+    return "ok"
 @app.post("/api/deposit")
 def deposit():
     u = me(); j = request.get_json(force=True); amt = num(j.get("amount")); trx = (j.get("trx") or "").strip().upper()
     if amt < 10 or j.get("method") not in METHODS or not 6 <= len(trx) <= 64: raise E("Sob info thik moto din")
     try: run("INSERT INTO deposits(user_id,method,trx,amount,created) VALUES(?,?,?,?,?)", (u["id"], j["method"], trx, amt, now()))
-    except sqlite3.IntegrityError: raise E("Ei TrxID age use hoyeche")
-    return jsonify(ok=1)
-def dig(o, path):
-    for k in path.split("."): o = o.get(k) if isinstance(o, dict) else None
-    return o
-def fulfill(oid, code, pid):  # supplier API call. None = manual order
-    s = S()
-    if s["auto_topup"] != "on" or not s["sup_url"] or not code: return None
-    body = s["sup_body"].replace("{uid}", pid).replace("{code}", code).replace("{order_id}", str(oid))
-    h = {"Content-Type": "application/json"}
-    if s["sup_key"]: h[s["sup_header"] or "Authorization"] = (s["sup_prefix"] or "") + s["sup_key"]
-    try:
-        with urllib.request.urlopen(urllib.request.Request(s["sup_url"], body.encode(), h, method="POST"), timeout=25) as r: txt = r.read().decode()[:400]
-    except urllib.error.HTTPError as e: return ("pending", "Supplier HTTP %s" % e.code)
-    except Exception as e: return ("pending", "Supplier error: " + str(e)[:80])  # unknown result: admin check korbe, auto refund hobe na
-    try: v = str(dig(json.loads(txt), s["sup_ok_field"])).lower()
-    except ValueError: v = ""
-    if v == s["sup_ok_value"].lower(): return ("done", "Auto: " + txt[:150])
-    if v in [x.strip().lower() for x in s["sup_fail_values"].split(",")]: return ("cancelled", "Auto failed: " + txt[:150])
-    return ("pending", "Supplier: " + txt[:150])
+    except sqlite3.IntegrityError:
+        d = q("SELECT * FROM deposits WHERE trx=?", (trx,), one=True)
+        if not (d and d["user_id"] == u["id"] and d["status"] == "pending"): raise E("Ei TrxID age use hoyeche")
+    return jsonify(ok=1, status="approved" if auto_match(trx) else "pending")
 @app.post("/api/order")
 def order():
     u = me(); j = request.get_json(force=True)
@@ -338,7 +357,7 @@ def redeem():
     return jsonify(ok=1)
 
 # ---------------- ADMIN ----------------
-AD = {"deposits": "SELECT d.*,u.username FROM deposits d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
+AD = {"sms": "SELECT * FROM pay_sms ORDER BY id DESC LIMIT 60", "deposits": "SELECT d.*,u.username FROM deposits d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "orders": "SELECT d.*,u.username FROM orders d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "withdrawals": "SELECT d.*,u.username FROM withdrawals d JOIN users u ON u.id=d.user_id ORDER BY d.id DESC LIMIT 60",
       "tournaments": "SELECT t.*,(SELECT COUNT(*) FROM joins j WHERE j.tid=t.id) joined FROM tournaments t ORDER BY id DESC LIMIT 40",
