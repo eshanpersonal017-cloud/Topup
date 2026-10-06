@@ -15,7 +15,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
-       "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
+       "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
        **{"pay_" + m: os.environ.get("PAY_NUMBER", "01XXXXXXXXX") for m in METHODS}}
 
 class E(Exception):
@@ -56,8 +56,9 @@ def init():
         CREATE TABLE IF NOT EXISTS joins(id INTEGER PRIMARY KEY, tid INT, user_id INT, ign TEXT, UNIQUE(tid,user_id));
         CREATE TABLE IF NOT EXISTS spins(id INTEGER PRIMARY KEY, user_id INT, coins INT, created TEXT);
         CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS cats(name TEXT PRIMARY KEY, img TEXT);
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);""")
-        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'")]:
+        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
         if not d.execute("SELECT 1 FROM packages").fetchone():
@@ -96,7 +97,7 @@ def num(v, d=0):
 @app.get("/")
 def index(): return send_from_directory("static", "index.html")
 @app.get("/admin")
-def admin_page(): return send_from_directory("static", "index.html")
+def admin_page(): return send_from_directory("static", "admin.html")
 @app.get("/sw.js")
 def sw(): return Response("self.addEventListener('fetch',()=>{});", mimetype="application/javascript")
 @app.get("/icon.svg")
@@ -106,7 +107,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], auto=bool(s["pay_url"] and s["pay_key"]),
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool(s["pay_url"] and s["pay_key"]),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -198,7 +199,21 @@ def latest():
     for x in r: x["username"] = x["username"][:3] + "***"
     return jsonify(r)
 @app.get("/api/packages")
-def packages(): return jsonify(q("SELECT * FROM packages ORDER BY id"))
+def packages(): return jsonify(q("SELECT id,game,name,price,section,stock FROM packages ORDER BY id"))
+@app.get("/api/cats")
+def cats(): return jsonify({r["name"]: r["img"] for r in q("SELECT * FROM cats")})
+@app.post("/api/admin/cat")
+def a_cat():
+    admin(); j = request.get_json(force=True); n = (j.get("name") or "").strip()
+    if not n: raise E("Category naam din")
+    run("INSERT INTO cats(name,img) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET img=excluded.img", (n, (j.get("img") or "").strip())); return jsonify(ok=1)
+@app.post("/api/admin/package/<int:i>/update")
+def a_pupd(i):
+    admin(); j = request.get_json(force=True); p = q("SELECT * FROM packages WHERE id=?", (i,), one=True)
+    if not p: raise E("Package nai", 404)
+    g_ = lambda k: j[k] if k in j else p[k]
+    run("UPDATE packages SET game=?,name=?,price=?,section=?,code=?,stock=? WHERE id=?",
+        (str(g_("game")).strip(), str(g_("name")).strip(), num(g_("price")), str(g_("section")).strip().upper(), str(g_("code") or "").strip(), 1 if g_("stock") else 0, i)); return jsonify(ok=1)
 
 
 def gw(path, body):
@@ -271,6 +286,7 @@ def order():
     u = me(); j = request.get_json(force=True)
     p = q("SELECT * FROM packages WHERE id=?", (j.get("package_id"),), one=True); pid = (j.get("player_id") or "").strip()
     if not p or not re.fullmatch(r"\d{5,15}", pid): raise E("Package/Player ID vul")
+    if p["stock"] == 0: raise E("Ei package ekhon stock e nai")
     if not run("UPDATE users SET balance=balance-? WHERE id=? AND balance>=?", (p["price"], u["id"], p["price"])): raise E("Balance kom. Add Money korun")
     d = db(); oid = d.execute("INSERT INTO orders(user_id,package,player_id,price,created) VALUES(?,?,?,?,?)",
                               (u["id"], p["game"] + " - " + p["name"], pid, p["price"], now())).lastrowid; d.commit()
