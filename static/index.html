@@ -95,7 +95,7 @@ async function sVerify(){try{U=await api("signup/verify",{email:SE,code:$("#cd")
 async function sResend(){try{await api("signup/start",SD);alert("Notun code pathano hoyeche")}catch(e){alert(e.message)}}
 const ic=n=>/diamond/i.test(n)?"💎":/member/i.test(n)?"🎫":/uc/i.test(n)?"🎯":/level/i.test(n)?"⭐":/vpn/i.test(n)?"🛡️":/gift|card/i.test(n)?"🎁":"🎮";
 const foot=()=>`<footer><div class="fh">CUSTOMER SUPPORT</div><a class="fl" href="${esc(C.telegram)}" target="_blank"><span style="font-size:22px">✈</span><div><div style="font-size:11px;color:#cbd5e1">9AM – 11PM Daily</div><b>Telegram Support</b></div></a><a class="fl" href="${esc(C.telegram)}" target="_blank"><span style="font-size:22px">📢</span><div><div style="font-size:11px;color:#cbd5e1">Telegram Channel</div><b>Join Now</b></div></a><div class="fh">STAY CONNECTED</div><div class="fl"><b>${esc(C.site)}</b></div></footer>`;
-function openP(n){PG=n;SEL=0;tab="prod";draw();scrollTo(0,0)}
+async function openP(n){try{C=await fetch("/api/config",{cache:"no-store"}).then(r=>r.json())}catch(e){}PG=n;SEL=0;tab="prod";draw();scrollTo(0,0)}
 async function home(){const [ps,lt,ct]=await Promise.all([api("packages"),api("latest"),api("cats")]),S={};
 ps.forEach(p=>{const s=p.section||"TOPUP";((S[s]??={})[p.game]??=[]).push(p)});
 const pop=!sessionStorage.pop?(sessionStorage.pop=1,`<div class="modal" onclick="this.remove()"><div class="card"><h2 style="margin-top:0">🎁 Offer</h2><p>${esc(C.popup)}</p><button onclick="tab='matches';draw()">Join Now</button></div></div>`):"";
