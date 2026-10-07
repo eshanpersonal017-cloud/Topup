@@ -15,7 +15,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
-       "uid_url": os.environ.get("UID_URL", ""), "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
+       "uid_url": os.environ.get("UID_URL", ""), "uid_key": os.environ.get("UID_KEY", ""), "uid_header": "x-api-key", "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
        **{"pay_" + m: os.environ.get("PAY_NUMBER", "01XXXXXXXXX") for m in METHODS}}
 
 class E(Exception):
@@ -43,7 +43,7 @@ def give_reward(oid):  # order complete hole coin reward (ekbar)
     if r > 0 and run("UPDATE orders SET reward=? WHERE id=? AND reward=0", (r, oid)): run("UPDATE users SET coins=coins+? WHERE id=?", (r, o["user_id"]))
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url", "wm_public", "wm_secret")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url", "wm_public", "wm_secret", "uid_key")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -355,6 +355,43 @@ def fulfill(oid, code, pid):  # supplier API call. None = manual order
     if v in [x.strip().lower() for x in s["sup_fail_values"].split(",")]: return ("cancelled", "Auto failed: " + txt[:150])
     return ("pending", "Supplier: " + txt[:150])
 PCACHE = {}
+NKEYS = ("accountname", "nickname", "nick_name", "playername", "player_name", "name", "username", "ign")
+LKEYS = ("accountlevel", "level", "lvl", "playerlevel", "player_level", "level_now")
+def hunt(o, keys, d=0):  # reply er bhetore keys khuje ber kore (field naam mile na gele)
+    if d > 6: return None
+    if isinstance(o, dict):
+        low = {str(k).lower(): v for k, v in o.items()}
+        for k in keys:
+            if isinstance(low.get(k), (str, int, float)) and low[k] != "": return low[k]
+        for v in o.values():
+            r = hunt(v, keys, d + 1)
+            if r is not None: return r
+    elif isinstance(o, list):
+        for v in o[:10]:
+            r = hunt(v, keys, d + 1)
+            if r is not None: return r
+    return None
+def uh(s):
+    h = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    if s["uid_key"]: h[s["uid_header"] or "x-api-key"] = s["uid_key"]
+    return h
+def lookup(uid, s):  # -> (http, raw, name, level)
+    http, raw = 0, ""
+    try:
+        req = urllib.request.Request(s["uid_url"].replace("{uid}", uid), headers=uh(s))
+        with urllib.request.urlopen(req, timeout=12) as r: http, raw = r.status, r.read(200000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        http = e.code
+        try: raw = e.read(5000).decode("utf-8", "replace")
+        except Exception: raw = ""
+    except Exception as e:
+        return 0, "Connect hoy ni: %s" % e, None, None
+    try: j = json.loads(raw)
+    except Exception: return http, raw, None, None
+    name = dig(j, s["uid_name_field"] or "nickname"); lv = dig(j, s["uid_level_field"] or "level")
+    if not isinstance(name, (str, int, float)) or name == "": name = hunt(j, NKEYS)
+    if not isinstance(lv, (str, int, float)) or lv == "": lv = hunt(j, LKEYS)
+    return http, raw, name, lv
 @app.get("/api/player/<uid>")
 def player(uid):  # Player ID er name/level (admin e set kora lookup API theke)
     u = me()
@@ -363,17 +400,24 @@ def player(uid):  # Player ID er name/level (admin e set kora lookup API theke)
     if not s["uid_url"]: return jsonify(configured=False)
     limit("pc:%s" % u["id"], 20, 60)
     hit = PCACHE.get(uid)
-    if hit and time.time() - hit[0] < 600: return jsonify(hit[1])
-    try:
-        req = urllib.request.Request(s["uid_url"].replace("{uid}", uid), headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=12) as r: j = json.loads(r.read(200000).decode())
-    except Exception: raise E("Player info ante parini, pore abar chesta korun", 502)
-    name = dig(j, s["uid_name_field"] or "nickname"); lv = dig(j, s["uid_level_field"] or "level")
-    out = dict(configured=True, found=bool(name), name=str(name or "")[:40], level=lv if isinstance(lv, (int, float, str)) else None)
+    if hit and time.time() - hit[0] < 21600: return jsonify(hit[1])
+    http, raw, name, lv = lookup(uid, s)
+    if http == 429: raise E("Ekhon onek check hocche, ektu pore chesta korun", 503)
+    if http in (401, 403): raise E("Player check ekhon bondho (admin API key check korun)", 502)
+    if http == 0 or http >= 500: raise E("Player info ante parini, pore abar chesta korun", 502)
+    out = dict(configured=True, found=bool(name), name=str(name or "")[:40], level=lv)
     if out["found"]:
         if len(PCACHE) > 2000: PCACHE.clear()
         PCACHE[uid] = (time.time(), out)
     return jsonify(out)
+@app.post("/api/admin/player_test")
+def player_test():
+    admin(); uid = str((request.get_json(force=True) or {}).get("uid", "")).strip()
+    if not re.fullmatch(r"\d{5,15}", uid): raise E("Sothik Player ID din")
+    s = S()
+    if not s["uid_url"]: raise E("Age Lookup URL boshiye Save korun")
+    http, raw, name, lv = lookup(uid, s)
+    return jsonify(http=http, raw=raw[:1800], name=name, level=lv)
 @app.post("/api/order")
 def order():
     u = me(); j = request.get_json(force=True)
