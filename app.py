@@ -12,7 +12,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t
        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
        "mail_key": os.environ.get("BREVO_API_KEY", ""), "mail_from": os.environ.get("MAIL_FROM", ""),
        "sms_secret": os.environ.get("SMS_SECRET", ""), "wm_public": os.environ.get("WM_PUBLIC", ""), "wm_secret": os.environ.get("WM_SECRET", ""), "pay_url": os.environ.get("PAY_URL", ""), "pay_key": os.environ.get("PAY_KEY", ""), "mail_url": os.environ.get("MAIL_URL", ""), "mail_secret": os.environ.get("MAIL_SECRET", ""), "auto_topup": "off", "sup_url": os.environ.get("SUPPLIER_URL", ""),
-       "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
+       "fz_key": os.environ.get("FZ_KEY", ""), "fz_webhook_secret": os.environ.get("FZ_WEBHOOK_SECRET", ""), "fz_field": "player_id", "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
        "uid_url": os.environ.get("UID_URL", ""), "uid_key": os.environ.get("UID_KEY", ""), "uid_header": "x-api-key", "pubg_url": "", "pubg_key": "", "pubg_header": "x-api-key", "pubg_name_field": "nickname", "pubg_level_field": "level", "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
@@ -43,7 +43,7 @@ def give_reward(oid):  # order complete hole coin reward (ekbar)
     if r > 0 and run("UPDATE orders SET reward=? WHERE id=? AND reward=0", (r, oid)): run("UPDATE users SET coins=coins+? WHERE id=?", (r, o["user_id"]))
 def credit(uid, amt): run("UPDATE users SET balance=balance+? WHERE id=?", (amt, uid))
 def S():
-    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url", "wm_public", "wm_secret", "uid_key")  # khali value hole Railway env variable e fallback korbe
+    s = dict(DEF); ENVK = ("google_client_id", "sup_url", "sup_key", "mail_key", "mail_from", "mail_url", "mail_secret", "pay_url", "pay_key", "sms_secret", "uid_url", "wm_public", "wm_secret", "uid_key", "fz_key", "fz_webhook_secret")  # khali value hole Railway env variable e fallback korbe
     s.update({r["k"]: r["v"] for r in q("SELECT * FROM settings") if r["v"].strip() or r["k"] not in ENVK}); return s
 
 def init():
@@ -66,7 +66,7 @@ def init():
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);
         CREATE TABLE IF NOT EXISTS wm_orders(order_id TEXT PRIMARY KEY, user_id INT, amount REAL, status TEXT DEFAULT 'new', created TEXT);
         CREATE TABLE IF NOT EXISTS wm_log(id INTEGER PRIMARY KEY, at TEXT, ok INT, note TEXT, body TEXT);""")
-        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0"), ("cats", "kind TEXT DEFAULT ''"), ("wm_orders", "kind TEXT DEFAULT 'dep'"), ("wm_orders", "pkg_id INTEGER DEFAULT 0"), ("wm_orders", "pid TEXT DEFAULT ''")]:
+        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0"), ("orders", "ext TEXT DEFAULT ''"), ("cats", "kind TEXT DEFAULT ''"), ("wm_orders", "kind TEXT DEFAULT 'dep'"), ("wm_orders", "pkg_id INTEGER DEFAULT 0"), ("wm_orders", "pid TEXT DEFAULT ''")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
         if not d.execute("SELECT 1 FROM packages").fetchone():
@@ -348,9 +348,49 @@ def deposit():
 def dig(o, path):
     for k in path.split("."): o = o.get(k) if isinstance(o, dict) else None
     return o
+FZ_BASE = os.environ.get("FZ_BASE", "https://api.fzr.cards/api/v2"); FZFAIL = ("failed", "refund", "refunded", "cancelled", "canceled", "rejected"); FZLAST = {}
+def fz_call(s, method, path, body=None, idem=None):  # FazerCards API v2
+    h = {"X-API-Key": s["fz_key"], "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    if idem: h["Idempotency-Key"] = idem
+    req = urllib.request.Request(FZ_BASE + path, json.dumps(body).encode() if body is not None else None, h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r: return r.status, json.loads(r.read(200000).decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.loads(e.read(5000).decode() or "{}")
+        except Exception: return e.code, {}
+def fz_order(s, oid, code, pid):  # package code = "category_id|offer_id"
+    cat, off = code.split("|", 1)
+    try: http, j = fz_call(s, "POST", "/topups/order", {"category_id": cat.strip(), "offer_id": off.strip(), "fields": {s["fz_field"] or "player_id": pid}}, "tre-%d-%s" % (oid, secrets.token_hex(4)))
+    except Exception as e: return ("pending", "FazerCards error: " + str(e)[:80])  # result jana nai: admin check korbe
+    o = j.get("order") if isinstance(j.get("order"), dict) else {}
+    if http in (200, 201) and j.get("ok") and o.get("id"):
+        st = str(o.get("status", "")).lower(); ext = str(o["id"])
+        if st == "completed": return ("done", "FazerCards %s: completed" % ext, ext)
+        if st in FZFAIL: return ("cancelled", "FazerCards %s: %s" % (ext, st), ext)
+        return ("pending", "FazerCards %s: %s" % (ext, st or "processing"), ext)
+    return ("pending", "FazerCards HTTP %s: %s" % (http, str(j.get("error") or j)[:120]))
+def fz_apply(ext, st):  # FazerCards order status -> amader order (ekbar-i hoy)
+    st = (st or "").lower(); new = "done" if st == "completed" else "cancelled" if st in FZFAIL else None
+    o = q("SELECT * FROM orders WHERE ext=? AND status='pending'", (ext,), one=True) if new and ext else None
+    if not o or not run("UPDATE orders SET status=?, note=? WHERE id=? AND status='pending'", (new, "FazerCards %s: %s" % (ext, st), o["id"])): return None
+    if new == "cancelled": credit(o["user_id"], o["price"])
+    else: give_reward(o["id"])
+    return new
+def fz_sync(uid):  # webhook na ashle-o: user order page khulle pending order er status check
+    s = S()
+    if not s["fz_key"]: return
+    if len(FZLAST) > 5000: FZLAST.clear()
+    for o in q("SELECT id,ext FROM orders WHERE user_id=? AND status='pending' AND ext!='' ORDER BY id DESC LIMIT 5", (uid,)):
+        if time.time() - FZLAST.get(o["id"], 0) < 20 or not re.fullmatch(r"ord-\d+", o["ext"]): continue
+        FZLAST[o["id"]] = time.time()
+        try: http, j = fz_call(s, "GET", "/orders/" + o["ext"])
+        except Exception: continue
+        if http == 200 and isinstance(j.get("order"), dict): fz_apply(o["ext"], str(j["order"].get("status", "")))
 def fulfill(oid, code, pid):  # supplier API call. None = manual order
     s = S()
-    if s["auto_topup"] != "on" or not s["sup_url"] or not code: return None
+    if s["auto_topup"] != "on" or not code: return None
+    if s["fz_key"] and "|" in code: return fz_order(s, oid, code, pid)
+    if not s["sup_url"]: return None
     body = s["sup_body"].replace("{uid}", pid).replace("{code}", code).replace("{order_id}", str(oid))
     h = {"Content-Type": "application/json"}
     if s["sup_key"]: h[s["sup_header"] or "Authorization"] = (s["sup_prefix"] or "") + s["sup_key"]
@@ -432,17 +472,17 @@ def guess_kind(name):  # admin e type set na thakle category er naam dekhe: PUBG
     if re.search(r"pubg|bgmi|\buc\b", name, re.I): return "pubg"
     if re.search(r"free\s*fire|freefire|\bff\b|uid|diamond|weekly|monthly|membership|level\s*up|booyah|elite", name, re.I): return "ff"
     return "tg"
-def kinds():  # effective type: admin e set kora ta age, na thakle naam theke guess
-    out = {r["game"]: guess_kind(r["game"]) for r in q("SELECT DISTINCT game FROM packages")}
-    for r in q("SELECT name,kind FROM cats"):
-        if r["kind"]: out[r["name"]] = r["kind"]
+def kinds():  # effective type: admin e set kora ta age (space ignore kore), na thakle naam theke guess
+    ex = {r["name"].strip(): r["kind"] for r in q("SELECT name,kind FROM cats") if r["kind"]}
+    out = {g["game"]: ex.get(g["game"].strip()) or guess_kind(g["game"]) for g in q("SELECT DISTINCT game FROM packages")}
+    for n, k in ex.items(): out.setdefault(n, k)
     return out
 def cat_kind(game):
-    r = q("SELECT kind FROM cats WHERE name=?", (game,), one=True); return (r or {}).get("kind") or guess_kind(game)
+    return kinds().get(game) or guess_kind(game)
 def norm_pid(p, raw):  # category onujayi Player ID / Telegram username check
     raw = (raw or "").strip()
     if cat_kind(p["game"]) == "tg":
-        if not re.fullmatch(r"@?[A-Za-z0-9_]{5,32}", raw): raise E("Sothik Telegram username din (jemon @username)")
+        if not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}", raw): raise E("Sothik Telegram username din (jemon @username)")
         return "@" + raw.lstrip("@")
     if not re.fullmatch(r"\d{5,15}", raw): raise E("Package/Player ID vul")
     return raw
@@ -453,7 +493,7 @@ def create_order(uid, p, pid, price):  # order toiri + supplier fulfill (balance
                               (uid, p["game"] + " - " + p["name"], pid, price, now())).lastrowid; d.commit()
     res = fulfill(oid, p.get("code") or "", pid)
     if res:
-        run("UPDATE orders SET status=?, note=? WHERE id=?", (res[0], res[1], oid))
+        run("UPDATE orders SET status=?, note=?, ext=? WHERE id=?", (res[0], res[1], res[2] if len(res) > 2 else "", oid))
         if res[0] == "cancelled": credit(uid, price)
         if res[0] == "done": give_reward(oid)
     return oid, res
@@ -477,9 +517,39 @@ def order_instant():  # wallet balance chara, sorasori Waitmark e pay kore order
     if p["stock"] == 0: raise E("Ei package ekhon stock e nai")
     if p["price"] < 10: raise E("Instant Pay er jonno minimum 10 taka")
     return jsonify(url=wm_checkout(s, u["id"], p["price"], "order", p["id"], pid))
+@app.post("/api/fz/webhook")
+def fz_webhook():  # FazerCards -> order status (signed)
+    limit("fz:" + clientip(), 300, 600)
+    raw = request.get_data(); sec = S()["fz_webhook_secret"]; sig = request.headers.get("X-Webhook-Signature", "")
+    if not (sec and hmac.compare_digest(("sha256=" + hmac.new(sec.encode(), raw, hashlib.sha256).hexdigest()).encode(), sig.encode())):
+        wmlog(0, "FazerCards: signature mile ni", raw.decode("utf-8", "replace")); return "Invalid signature", 401
+    j = request.get_json(silent=True, force=True); j = j if isinstance(j, dict) else {}; d = j.get("data") if isinstance(j.get("data"), dict) else {}
+    if j.get("event") == "order.status_changed":
+        r = fz_apply(str(d.get("order_id", "")), str(d.get("status", "")))
+        wmlog(1 if r else 0, "FazerCards %s: %s -> %s" % (d.get("order_id"), d.get("status"), r or "kono change nai"), raw.decode("utf-8", "replace"))
+    return "OK"
+@app.post("/api/admin/fz_catalog")
+def fz_catalog():  # FazerCards catalog theke package code ber korar jonno
+    admin(); s = S(); qy = ((request.get_json(force=True) or {}).get("q") or "free fire").strip().lower()
+    if not s["fz_key"]: raise E("Age FazerCards API Key boshiye Save korun")
+    cats, cur, lines = [], "", []
+    try:
+        for _ in range(20):
+            http, j = fz_call(s, "GET", "/topups?limit=50" + ("&cursor=" + urllib.parse.quote(cur) if cur else ""))
+            if http != 200: raise E("FazerCards HTTP %s: %s" % (http, str(j.get("error", ""))[:100]), 502)
+            cats += [c for c in j.get("items", []) if qy in str(c.get("name", "")).lower()]
+            m = j.get("meta") or {}; cur = m.get("next_cursor") or ""
+            if not m.get("has_more") or not cur: break
+        for c in cats[:6]:
+            http, j = fz_call(s, "GET", "/topups/offers?category_id=" + urllib.parse.quote(str(c.get("category_id"))))
+            lines.append("== %s (player field: %s)" % (c.get("name"), ", ".join(str(f.get("key")) for f in j.get("fields", [])) or "?"))
+            for o in j.get("offers", [])[:80]: lines.append("%s | $%s | %s|%s" % (o.get("name"), o.get("price_usd"), c.get("category_id"), o.get("offer_id")))
+    except E: raise
+    except Exception as e: raise E("FazerCards connect hoy ni: %s" % str(e)[:100], 502)
+    return jsonify(text="\n".join(lines) or "Kichu paoa jayni")
 @app.get("/api/history")
 def history():
-    i = me()["id"]; f = lambda t: q(f"SELECT * FROM {t} WHERE user_id=? ORDER BY id DESC LIMIT 25", (i,))
+    i = me()["id"]; fz_sync(i); f = lambda t: q(f"SELECT * FROM {t} WHERE user_id=? ORDER BY id DESC LIMIT 25", (i,))
     return jsonify(orders=f("orders"), deposits=f("deposits"), withdrawals=f("withdrawals"))
 
 @app.get("/api/tournaments")
