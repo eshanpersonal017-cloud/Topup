@@ -115,7 +115,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pubgcheck=bool(s["pubg_url"]), ckinds={r["name"]: r["kind"] for r in q("SELECT name,kind FROM cats") if r["kind"]}, instant=bool(s["wm_public"] and s["wm_secret"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool((s["wm_public"] and s["wm_secret"]) or (s["pay_url"] and s["pay_key"])),
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pubgcheck=bool(s["pubg_url"]), ckinds=kinds(), instant=bool(s["wm_public"] and s["wm_secret"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool((s["wm_public"] and s["wm_secret"]) or (s["pay_url"] and s["pay_key"])),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -428,8 +428,17 @@ def player_test():
     if not s[pre + "_url"]: raise E("Age Lookup URL boshiye Save korun")
     http, raw, name, lv = lookup(uid, s, pre)
     return jsonify(http=http, raw=raw[:1800], name=name, level=lv)
+def guess_kind(name):  # admin e type set na thakle category er naam dekhe: PUBG -> pubg, Free Fire -> ff, baki sob -> Telegram
+    if re.search(r"pubg|bgmi|\buc\b", name, re.I): return "pubg"
+    if re.search(r"free\s*fire|freefire|\bff\b|uid|diamond|weekly|monthly|membership|level\s*up|booyah|elite", name, re.I): return "ff"
+    return "tg"
+def kinds():  # effective type: admin e set kora ta age, na thakle naam theke guess
+    out = {r["game"]: guess_kind(r["game"]) for r in q("SELECT DISTINCT game FROM packages")}
+    for r in q("SELECT name,kind FROM cats"):
+        if r["kind"]: out[r["name"]] = r["kind"]
+    return out
 def cat_kind(game):
-    r = q("SELECT kind FROM cats WHERE name=?", (game,), one=True); return (r or {}).get("kind") or "ff"
+    r = q("SELECT kind FROM cats WHERE name=?", (game,), one=True); return (r or {}).get("kind") or guess_kind(game)
 def norm_pid(p, raw):  # category onujayi Player ID / Telegram username check
     raw = (raw or "").strip()
     if cat_kind(p["game"]) == "tg":
@@ -438,7 +447,7 @@ def norm_pid(p, raw):  # category onujayi Player ID / Telegram username check
     if not re.fullmatch(r"\d{5,15}", raw): raise E("Package/Player ID vul")
     return raw
 @app.get("/api/catkinds")
-def catkinds(): return jsonify({r["name"]: r["kind"] for r in q("SELECT name,kind FROM cats") if r["kind"]})
+def catkinds(): return jsonify(kinds())
 def create_order(uid, p, pid, price):  # order toiri + supplier fulfill (balance age theke kata/pay kora)
     d = db(); oid = d.execute("INSERT INTO orders(user_id,package,player_id,price,created) VALUES(?,?,?,?,?)",
                               (uid, p["game"] + " - " + p["name"], pid, price, now())).lastrowid; d.commit()
