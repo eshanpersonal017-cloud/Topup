@@ -388,7 +388,7 @@ def fz_sync(uid):  # webhook na ashle-o: user order page khulle pending order er
         if http == 200 and isinstance(j.get("order"), dict): fz_apply(o["ext"], str(j["order"].get("status", "")))
 def fulfill(oid, code, pid):  # supplier API call. None = manual order
     s = S()
-    if s["auto_topup"] != "on" or not code: return None
+    if s["auto_topup"].strip().lower() != "on" or not code: return None
     if s["fz_key"] and "|" in code: return fz_order(s, oid, code, pid)
     if not s["sup_url"]: return None
     body = s["sup_body"].replace("{uid}", pid).replace("{code}", code).replace("{order_id}", str(oid))
