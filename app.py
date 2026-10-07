@@ -15,7 +15,7 @@ DEF = {"site": os.environ.get("SITE_NAME", "TRE TOP UP"), "telegram": "https://t
        "sup_key": os.environ.get("SUPPLIER_KEY", ""), "sup_header": "Authorization", "sup_prefix": "Bearer ",
        "sup_body": '{"player_id":"{uid}","product":"{code}","reference":"{order_id}"}', "sup_ok_field": "status", "sup_ok_value": "success",
        "sup_fail_values": "failed,error,rejected,cancelled",
-       "uid_url": os.environ.get("UID_URL", ""), "uid_key": os.environ.get("UID_KEY", ""), "uid_header": "x-api-key", "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
+       "uid_url": os.environ.get("UID_URL", ""), "uid_key": os.environ.get("UID_KEY", ""), "uid_header": "x-api-key", "pubg_url": "", "pubg_key": "", "pubg_header": "x-api-key", "pubg_name_field": "nickname", "pubg_level_field": "level", "uid_name_field": "nickname", "uid_level_field": "level", "coin_rate": "20", "pending_note": "Apnar order ti processing e ache. Kichukkhon er moddhe complete hobe. Somossha thakle support e jogajog korun.", "notice": "Kono shomossha hole amader Telegram support e jogajog korun", "rules": "⚠️ Order korar age Player ID ar package thik moto check korun.\nVul Player ID te top-up hole company dayi thakbe na.\nOrder complete hote somoy lagte pare, onugroho kore opekkha korun.", "banner_title": "FREE TOURNAMENT", "banner_text": "Match khelun, puroskar jitun!", "banner_img": "", "popup": "🎉 Free Tournament! Ekhoni join korun ar jitun puroskar", "min_withdraw": "50",
        **{"pay_" + m: os.environ.get("PAY_NUMBER", "01XXXXXXXXX") for m in METHODS}}
 
 class E(Exception):
@@ -66,7 +66,7 @@ def init():
         CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, username TEXT, pw TEXT, code TEXT, expires INTEGER, tries INTEGER DEFAULT 0, sent INTEGER);
         CREATE TABLE IF NOT EXISTS wm_orders(order_id TEXT PRIMARY KEY, user_id INT, amount REAL, status TEXT DEFAULT 'new', created TEXT);
         CREATE TABLE IF NOT EXISTS wm_log(id INTEGER PRIMARY KEY, at TEXT, ok INT, note TEXT, body TEXT);""")
-        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0")]:
+        for t_, c_ in [("packages", "code TEXT DEFAULT ''"), ("orders", "note TEXT DEFAULT ''"), ("users", "email TEXT"), ("packages", "section TEXT DEFAULT 'TOPUP'"), ("packages", "stock INTEGER DEFAULT 1"), ("orders", "reward INTEGER DEFAULT 0"), ("cats", "kind TEXT DEFAULT ''"), ("wm_orders", "kind TEXT DEFAULT 'dep'"), ("wm_orders", "pkg_id INTEGER DEFAULT 0"), ("wm_orders", "pid TEXT DEFAULT ''")]:
             try: d.execute(f"ALTER TABLE {t_} ADD COLUMN {c_}")
             except sqlite3.OperationalError: pass
         if not d.execute("SELECT 1 FROM packages").fetchone():
@@ -115,7 +115,7 @@ def manifest(): return jsonify(name=S()["site"], short_name=S()["site"], start_u
                                 theme_color="#6d28d9", icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}])
 @app.get("/api/config")
 def config():
-    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool((s["wm_public"] and s["wm_secret"]) or (s["pay_url"] and s["pay_key"])),
+    s = S(); return jsonify(site=s["site"], telegram=s["telegram"], popup=s["popup"], notice=s["notice"], rules=s["rules"], coin_rate=num(s["coin_rate"]), uidcheck=bool(s["uid_url"]), pubgcheck=bool(s["pubg_url"]), ckinds={r["name"]: r["kind"] for r in q("SELECT name,kind FROM cats") if r["kind"]}, instant=bool(s["wm_public"] and s["wm_secret"]), pending_note=s["pending_note"], banner_title=s["banner_title"], banner_text=s["banner_text"], banner_img=s["banner_img"], auto=bool((s["wm_public"] and s["wm_secret"]) or (s["pay_url"] and s["pay_key"])),
                             methods=[{"m": m, "n": s["pay_" + m]} for m in METHODS], wheel=WHEEL, google=s["google_client_id"])
 
 @app.post("/api/google")
@@ -214,7 +214,8 @@ def cats(): return jsonify({r["name"]: r["img"] for r in q("SELECT * FROM cats")
 def a_cat():
     admin(); j = request.get_json(force=True); n = (j.get("name") or "").strip()
     if not n: raise E("Category naam din")
-    run("INSERT INTO cats(name,img) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET img=excluded.img", (n, (j.get("img") or "").strip())); return jsonify(ok=1)
+    k = j.get("kind") if j.get("kind") in ("ff", "pubg", "tg") else ""
+    run("INSERT INTO cats(name,img,kind) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET img=excluded.img, kind=excluded.kind", (n, (j.get("img") or "").strip(), k)); return jsonify(ok=1)
 @app.post("/api/admin/package/<int:i>/update")
 def a_pupd(i):
     admin(); j = request.get_json(force=True); p = q("SELECT * FROM packages WHERE id=?", (i,), one=True)
@@ -244,17 +245,19 @@ def settle(inv):  # gateway theke verify kore balance add kore (ekbar-i)
     except sqlite3.IntegrityError: return False
     credit(uid, amt); return True
 def clientip(): return (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[-1].strip()
+def wm_checkout(s, uid, amt, kind="dep", pkg=0, pid=""):  # Waitmark checkout link toiri
+    base = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0] + "://" + request.host
+    oid = "TRE-%d-%s" % (uid, secrets.token_hex(4))
+    run("INSERT INTO wm_orders(order_id,user_id,amount,status,created,kind,pkg_id,pid) VALUES(?,?,?,'new',?,?,?,?)", (oid, uid, amt, now(), kind, pkg, pid))
+    qs = urllib.parse.urlencode(dict(public_key=s["wm_public"], amount="%.2f" % amt, order_id=oid, success_url=base + "/api/wm/callback" + ("/order" if kind == "order" else "")))
+    return "https://pay.waitmark.com/checkout?" + qs
 @app.post("/api/deposit/auto")
 def deposit_auto():
     u = me(); amt = num((request.get_json(force=True) or {}).get("amount"))
     if amt < 10 or amt > 50000: raise E("Minimum 10 ar maximum 50000 taka")
     base = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0] + "://" + request.host
     s = S()
-    if s["wm_public"] and s["wm_secret"]:  # Waitmark Pay
-        oid = "TRE-%d-%s" % (u["id"], secrets.token_hex(4))
-        run("INSERT INTO wm_orders(order_id,user_id,amount,status,created) VALUES(?,?,?,'new',?)", (oid, u["id"], amt, now()))
-        qs = urllib.parse.urlencode(dict(public_key=s["wm_public"], amount="%.2f" % amt, order_id=oid, success_url=base + "/api/wm/callback"))
-        return jsonify(url="https://pay.waitmark.com/checkout?" + qs)
+    if s["wm_public"] and s["wm_secret"]: return jsonify(url=wm_checkout(s, u["id"], amt))  # Waitmark Pay
     r = gw("/api/checkout-v2", {"full_name": u["username"], "email": u["email"] or "customer@example.com", "amount": str(amt),
         "metadata": {"uid": u["id"], "sig": dsig(u["id"])}, "redirect_url": base + "/api/deposit/return", "return_type": "GET",
         "cancel_url": base + "/?dep=cancel", "webhook_url": base + "/api/deposit/webhook"})
@@ -274,12 +277,14 @@ def wmlog(ok, note, body):
     run("INSERT INTO wm_log(at,ok,note,body) VALUES(?,?,?,?)", (now(), ok, note[:80], body[:600]))
     run("DELETE FROM wm_log WHERE id<(SELECT MAX(id)-40 FROM wm_log)")
 @app.route("/api/wm/callback", methods=["GET", "POST"])
-def wm_callback():  # Waitmark: signed webhook (POST) + customer return (GET/POST)
-    if request.method == "GET": return redirect("/?dep=ok")
+@app.route("/api/wm/callback/<kind>", methods=["GET", "POST"])
+def wm_callback(kind="dep"):  # Waitmark: signed webhook (POST) + customer return (GET/POST)
+    back = "/?dep=order" if kind == "order" else "/?dep=ok"
+    if request.method == "GET": return redirect(back)
     limit("wm:" + clientip(), 300, 600)
     raw = request.get_data(); body = raw.decode("utf-8", "replace"); sig = request.headers.get("X-Waitmark-Signature", "").strip().lower()
     if not sig:  # browser return, webhook noy; balance shudhu signed webhook e add hoy
-        wmlog(0, "Signature header nai (customer return?)", body); return redirect("/?dep=ok", 303)
+        wmlog(0, "Signature header nai (customer return?)", body); return redirect(back, 303)
     sec = S()["wm_secret"]
     if not sec or not hmac.compare_digest(hmac.new(sec.encode(), raw, hashlib.sha256).hexdigest().encode(), sig.encode()):
         wmlog(0, "Signature mile ni", body); return "Unauthorized", 403
@@ -289,9 +294,13 @@ def wm_callback():  # Waitmark: signed webhook (POST) + customer return (GET/POS
     if not o: wmlog(0, "order paoa jayni", body); return "ok"
     if j.get("amount") is not None and num(j.get("amount")) < o["amount"] - 0.5: wmlog(0, "amount kom", body); return "ok"
     if run("UPDATE wm_orders SET status='paid' WHERE order_id=? AND status='new'", (oid,)):
-        try: run("INSERT INTO deposits(user_id,method,trx,amount,status,created) VALUES(?,?,?,?,'approved',?)", (o["user_id"], "Waitmark", "WM-" + oid, o["amount"], now()))
-        except sqlite3.IntegrityError: pass
-        credit(o["user_id"], o["amount"]); wmlog(1, "balance add: " + oid, body)
+        p = q("SELECT * FROM packages WHERE id=?", (o.get("pkg_id"),), one=True) if o.get("kind") == "order" else None
+        if p and p["stock"] != 0:  # Instant Pay order: taka already pay kora, tai balance kata hobe na
+            n, res = create_order(o["user_id"], p, o["pid"], o["amount"]); wmlog(1, "instant order #%s: %s" % (n, oid), body)
+        else:  # normal deposit (ba package stock e na thakle wallet e jama)
+            try: run("INSERT INTO deposits(user_id,method,trx,amount,status,created) VALUES(?,?,?,?,'approved',?)", (o["user_id"], "Waitmark", "WM-" + oid, o["amount"], now()))
+            except sqlite3.IntegrityError: pass
+            credit(o["user_id"], o["amount"]); wmlog(1, "balance add: " + oid, body)
     return "ok"
 SMS_FROM = re.compile(r"bkash|nagad|rocket|16216|dbbl|upay", re.I)
 def parse_sms(txt):
@@ -355,7 +364,7 @@ def fulfill(oid, code, pid):  # supplier API call. None = manual order
     if v in [x.strip().lower() for x in s["sup_fail_values"].split(",")]: return ("cancelled", "Auto failed: " + txt[:150])
     return ("pending", "Supplier: " + txt[:150])
 PCACHE = {}
-NKEYS = ("accountname", "nickname", "nick_name", "playername", "player_name", "name", "username", "ign")
+NKEYS = ("accountname", "nickname", "rolename", "role_name", "nick_name", "playername", "player_name", "name", "username", "ign")
 LKEYS = ("accountlevel", "level", "lvl", "playerlevel", "player_level", "level_now")
 def hunt(o, keys, d=0):  # reply er bhetore keys khuje ber kore (field naam mile na gele)
     if d > 6: return None
@@ -371,14 +380,14 @@ def hunt(o, keys, d=0):  # reply er bhetore keys khuje ber kore (field naam mile
             r = hunt(v, keys, d + 1)
             if r is not None: return r
     return None
-def uh(s):
+def uh(s, pre="uid"):
     h = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    if s["uid_key"]: h[s["uid_header"] or "x-api-key"] = s["uid_key"]
+    if s[pre + "_key"]: h[s[pre + "_header"] or "x-api-key"] = s[pre + "_key"]
     return h
-def lookup(uid, s):  # -> (http, raw, name, level)
+def lookup(uid, s, pre="uid"):  # -> (http, raw, name, level)
     http, raw = 0, ""
     try:
-        req = urllib.request.Request(s["uid_url"].replace("{uid}", uid), headers=uh(s))
+        req = urllib.request.Request(s[pre + "_url"].replace("{uid}", uid), headers=uh(s, pre))
         with urllib.request.urlopen(req, timeout=12) as r: http, raw = r.status, r.read(200000).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         http = e.code
@@ -388,7 +397,7 @@ def lookup(uid, s):  # -> (http, raw, name, level)
         return 0, "Connect hoy ni: %s" % e, None, None
     try: j = json.loads(raw)
     except Exception: return http, raw, None, None
-    name = dig(j, s["uid_name_field"] or "nickname"); lv = dig(j, s["uid_level_field"] or "level")
+    name = dig(j, s[pre + "_name_field"] or "nickname"); lv = dig(j, s[pre + "_level_field"] or "level")
     if not isinstance(name, (str, int, float)) or name == "": name = hunt(j, NKEYS)
     if not isinstance(lv, (str, int, float)) or lv == "": lv = hunt(j, LKEYS)
     return http, raw, name, lv
@@ -396,43 +405,69 @@ def lookup(uid, s):  # -> (http, raw, name, level)
 def player(uid):  # Player ID er name/level (admin e set kora lookup API theke)
     u = me()
     if not re.fullmatch(r"\d{5,15}", uid): raise E("Sothik Player ID din")
+    kind = "pubg" if request.args.get("kind") == "pubg" else "ff"; pre = "pubg" if kind == "pubg" else "uid"
     s = S()
-    if not s["uid_url"]: return jsonify(configured=False)
+    if not s[pre + "_url"]: return jsonify(configured=False)
     limit("pc:%s" % u["id"], 20, 60)
-    hit = PCACHE.get(uid)
+    hit = PCACHE.get((kind, uid))
     if hit and time.time() - hit[0] < 21600: return jsonify(hit[1])
-    http, raw, name, lv = lookup(uid, s)
+    http, raw, name, lv = lookup(uid, s, pre)
     if http == 429: raise E("Ekhon onek check hocche, ektu pore chesta korun", 503)
     if http in (401, 403): raise E("Player check ekhon bondho (admin API key check korun)", 502)
     if http == 0 or http >= 500: raise E("Player info ante parini, pore abar chesta korun", 502)
     out = dict(configured=True, found=bool(name), name=str(name or "")[:40], level=lv)
     if out["found"]:
         if len(PCACHE) > 2000: PCACHE.clear()
-        PCACHE[uid] = (time.time(), out)
+        PCACHE[(kind, uid)] = (time.time(), out)
     return jsonify(out)
 @app.post("/api/admin/player_test")
 def player_test():
-    admin(); uid = str((request.get_json(force=True) or {}).get("uid", "")).strip()
+    admin(); j = request.get_json(force=True) or {}; uid = str(j.get("uid", "")).strip()
     if not re.fullmatch(r"\d{5,15}", uid): raise E("Sothik Player ID din")
-    s = S()
-    if not s["uid_url"]: raise E("Age Lookup URL boshiye Save korun")
-    http, raw, name, lv = lookup(uid, s)
+    pre = "pubg" if j.get("kind") == "pubg" else "uid"; s = S()
+    if not s[pre + "_url"]: raise E("Age Lookup URL boshiye Save korun")
+    http, raw, name, lv = lookup(uid, s, pre)
     return jsonify(http=http, raw=raw[:1800], name=name, level=lv)
-@app.post("/api/order")
-def order():
-    u = me(); j = request.get_json(force=True)
-    p = q("SELECT * FROM packages WHERE id=?", (j.get("package_id"),), one=True); pid = (j.get("player_id") or "").strip()
-    if not p or not re.fullmatch(r"\d{5,15}", pid): raise E("Package/Player ID vul")
-    if p["stock"] == 0: raise E("Ei package ekhon stock e nai")
-    if not run("UPDATE users SET balance=balance-? WHERE id=? AND balance>=?", (p["price"], u["id"], p["price"])): raise E("Balance kom. Add Money korun")
+def cat_kind(game):
+    r = q("SELECT kind FROM cats WHERE name=?", (game,), one=True); return (r or {}).get("kind") or "ff"
+def norm_pid(p, raw):  # category onujayi Player ID / Telegram username check
+    raw = (raw or "").strip()
+    if cat_kind(p["game"]) == "tg":
+        if not re.fullmatch(r"@?[A-Za-z0-9_]{5,32}", raw): raise E("Sothik Telegram username din (jemon @username)")
+        return "@" + raw.lstrip("@")
+    if not re.fullmatch(r"\d{5,15}", raw): raise E("Package/Player ID vul")
+    return raw
+@app.get("/api/catkinds")
+def catkinds(): return jsonify({r["name"]: r["kind"] for r in q("SELECT name,kind FROM cats") if r["kind"]})
+def create_order(uid, p, pid, price):  # order toiri + supplier fulfill (balance age theke kata/pay kora)
     d = db(); oid = d.execute("INSERT INTO orders(user_id,package,player_id,price,created) VALUES(?,?,?,?,?)",
-                              (u["id"], p["game"] + " - " + p["name"], pid, p["price"], now())).lastrowid; d.commit()
+                              (uid, p["game"] + " - " + p["name"], pid, price, now())).lastrowid; d.commit()
     res = fulfill(oid, p.get("code") or "", pid)
     if res:
         run("UPDATE orders SET status=?, note=? WHERE id=?", (res[0], res[1], oid))
-        if res[0] == "cancelled": credit(u["id"], p["price"])
+        if res[0] == "cancelled": credit(uid, price)
         if res[0] == "done": give_reward(oid)
+    return oid, res
+@app.post("/api/order")
+def order():
+    u = me(); j = request.get_json(force=True)
+    p = q("SELECT * FROM packages WHERE id=?", (j.get("package_id"),), one=True)
+    if not p: raise E("Package/Player ID vul")
+    pid = norm_pid(p, j.get("player_id"))
+    if p["stock"] == 0: raise E("Ei package ekhon stock e nai")
+    if not run("UPDATE users SET balance=balance-? WHERE id=? AND balance>=?", (p["price"], u["id"], p["price"])): raise E("Balance kom. Add Money korun")
+    oid, res = create_order(u["id"], p, pid, p["price"])
     return jsonify(ok=1, status=res[0] if res else "pending")
+@app.post("/api/order/instant")
+def order_instant():  # wallet balance chara, sorasori Waitmark e pay kore order
+    u = me(); j = request.get_json(force=True); s = S()
+    if not (s["wm_public"] and s["wm_secret"]): raise E("Instant Pay ekhon chalu nai")
+    p = q("SELECT * FROM packages WHERE id=?", (j.get("package_id"),), one=True)
+    if not p: raise E("Package/Player ID vul")
+    pid = norm_pid(p, j.get("player_id"))
+    if p["stock"] == 0: raise E("Ei package ekhon stock e nai")
+    if p["price"] < 10: raise E("Instant Pay er jonno minimum 10 taka")
+    return jsonify(url=wm_checkout(s, u["id"], p["price"], "order", p["id"], pid))
 @app.get("/api/history")
 def history():
     i = me()["id"]; f = lambda t: q(f"SELECT * FROM {t} WHERE user_id=? ORDER BY id DESC LIMIT 25", (i,))
